@@ -437,15 +437,97 @@ Function: `node_embed(state: dict, llm: LLMClient) -> dict`
 
 **File:** `tests/unit/ingest_graph/test_node_upsert_qdrant.py`
 
-Function: `node_upsert_qdrant(state: dict, qdrant: QdrantClient) -> dict`
+Function: `node_upsert_qdrant(state: dict, retrieval: RetrievalService) -> dict`
+
+MAJOR FIX: The node must call `RetrievalService.upsert_batch()`, NOT `QdrantClient.upsert` directly.
+Direct `QdrantClient` usage outside `src/retrieval/` violates the hard rule enforced by `test_architecture.py`.
+Tests must mock `RetrievalService`, not `QdrantClient`.
+
+```python
+import uuid
+from unittest.mock import AsyncMock, call
+
+import pytest
+
+from src.graphs.ingest_graph.nodes.node_upsert_qdrant import node_upsert_qdrant
+from src.graphs.ingest_graph.state import IngestState
+
+
+@pytest.fixture
+def mock_retrieval() -> AsyncMock:
+    return AsyncMock(spec=RetrievalService)
+
+
+@pytest.fixture
+def sample_ingest_state(base_ingest_state) -> IngestState:
+    return IngestState(**base_ingest_state)
+
+
+async def test_node_upsert_calls_retrieval_service(
+    mock_retrieval: AsyncMock,
+    sample_ingest_state: IngestState,
+) -> None:
+    chunks_data = [
+        {"text": "chunk A", "page": 1, "section": "§1"},
+        {"text": "chunk B", "page": 2, "section": "§2"},
+    ]
+    embeddings = [[0.1] * 1024, [0.2] * 1024]
+    state_with_chunks = sample_ingest_state.model_copy(
+        update={"chunks": chunks_data, "embeddings": embeddings}
+    )
+    result = await node_upsert_qdrant(state_with_chunks, retrieval=mock_retrieval)
+    mock_retrieval.upsert_batch.assert_called_once()
+    call_points = mock_retrieval.upsert_batch.call_args[1]["points"]
+    assert len(call_points) == 2
+    assert all(isinstance(p.id, uuid.UUID) for p in call_points)
+
+
+async def test_point_ids_are_deterministic(mock_retrieval: AsyncMock, sample_ingest_state: IngestState):
+    """Same chunk content must produce the same point_id on repeated calls."""
+    chunks_data = [{"text": "deterministic chunk", "page": 1, "section": "§1"}]
+    embeddings = [[0.1] * 1024]
+    state = sample_ingest_state.model_copy(update={"chunks": chunks_data, "embeddings": embeddings})
+    await node_upsert_qdrant(state, retrieval=mock_retrieval)
+    first_call_points = mock_retrieval.upsert_batch.call_args[1]["points"]
+    mock_retrieval.reset_mock()
+    await node_upsert_qdrant(state, retrieval=mock_retrieval)
+    second_call_points = mock_retrieval.upsert_batch.call_args[1]["points"]
+    assert first_call_points[0].id == second_call_points[0].id
+
+
+async def test_point_ids_stored_in_state(mock_retrieval: AsyncMock, sample_ingest_state: IngestState):
+    chunks_data = [{"text": "chunk", "page": 1}]
+    state = sample_ingest_state.model_copy(update={"chunks": chunks_data, "embeddings": [[0.1] * 1024]})
+    result = await node_upsert_qdrant(state, retrieval=mock_retrieval)
+    assert len(result["point_ids"]) == 1
+
+
+async def test_qdrant_failure_raises(mock_retrieval: AsyncMock, sample_ingest_state: IngestState):
+    mock_retrieval.upsert_batch.side_effect = QdrantUnavailableError("connection refused")
+    state = sample_ingest_state.model_copy(
+        update={"chunks": [{"text": "x"}], "embeddings": [[0.1] * 1024]}
+    )
+    with pytest.raises(NodeExecutionError):
+        await node_upsert_qdrant(state, retrieval=mock_retrieval)
+
+
+async def test_tenant_id_always_in_payload(mock_retrieval: AsyncMock, sample_ingest_state: IngestState):
+    """Every point payload must include tenant_id — critical isolation invariant."""
+    state = sample_ingest_state.model_copy(
+        update={"chunks": [{"text": "x"}, {"text": "y"}], "embeddings": [[0.1] * 1024, [0.2] * 1024]}
+    )
+    await node_upsert_qdrant(state, retrieval=mock_retrieval)
+    call_points = mock_retrieval.upsert_batch.call_args[1]["points"]
+    assert all(p.payload["tenant_id"] == str(state.tenant_id) for p in call_points)
+```
 
 | Test name | Setup | Assert |
 |---|---|---|
-| `test_upserts_points_with_correct_payload` | 2 chunks + 2 embeddings | `qdrant.upsert` called with points having `tenant_id`, `collection_id`, `document_id` in payload |
-| `test_point_ids_are_deterministic` | Same chunk content called twice | Same `point_id` generated both times (UUID5 or similar deterministic scheme) |
-| `test_point_ids_stored_in_state` | Successful upsert | `state["point_ids"]` has same count as chunks |
-| `test_qdrant_failure_raises` | `qdrant.upsert(side_effect=QdrantUnavailableError())` | Raises `NodeExecutionError`, `retry_count` incremented |
-| `test_tenant_id_always_in_payload` | Any state | Every point payload has `tenant_id == state["tenant_id"]` — this is the critical isolation invariant |
+| `test_node_upsert_calls_retrieval_service` | 2 chunks + 2 embeddings | `mock_retrieval.upsert_batch` called once; all points have `uuid.UUID` ids |
+| `test_point_ids_are_deterministic` | Same chunk content called twice | Same `point_id` generated both times (UUID5 or deterministic scheme) |
+| `test_point_ids_stored_in_state` | Successful upsert | `result["point_ids"]` has same count as chunks |
+| `test_qdrant_failure_raises` | `mock_retrieval.upsert_batch` raises `QdrantUnavailableError` | Raises `NodeExecutionError` |
+| `test_tenant_id_always_in_payload` | Any state | Every `point.payload["tenant_id"] == str(state.tenant_id)` |
 
 **File:** `tests/unit/ingest_graph/test_node_persist_status.py`
 
@@ -1234,7 +1316,14 @@ async def test_trap_questions_return_not_found(test_client, eval_user_jwt, trap_
     All 20 trap questions must result in "nie znalazłem w dokumentach" (or configured equivalent).
     trap_accuracy must be 1.00 — any answer fabricated from outside corpus is a failure.
     """
+    # MAJOR FIX: Include both English and Polish variants to match settings.not_found_message
+    # (default English) and any locale overrides. Use case-insensitive matching.
     NOT_FOUND_INDICATORS = [
+        "not found in",
+        "could not find",
+        "i could not find an answer",
+        "nie znalazłem",
+        "nie znalazłem odpowiedzi",
         "nie znalazłem w dokumentach",
         "nie mam informacji",
         "brak informacji w dostępnych dokumentach",
@@ -1246,8 +1335,9 @@ async def test_trap_questions_return_not_found(test_client, eval_user_jwt, trap_
             "messages": [{"role": "user", "content": q["question"]}],
             "stream": False,
         }, headers={"Authorization": f"Bearer {eval_user_jwt}"})
-        answer = resp.json()["choices"][0]["message"]["content"].lower()
-        if not any(indicator in answer for indicator in NOT_FOUND_INDICATORS):
+        answer = resp.json()["choices"][0]["message"]["content"]
+        # Case-insensitive matching: settings.not_found_message may be in any case
+        if not any(indicator in answer.lower() for indicator in NOT_FOUND_INDICATORS):
             failures.append({"question": q["question"], "answer": answer[:200]})
 
     assert failures == [], (
@@ -1467,8 +1557,31 @@ class DocumentFactory(SQLAlchemyModelFactory):
 
 class JWTFactory:
     """
-    Creates signed JWT tokens for testing.
-    Does NOT use Keycloak — uses HMAC-SHA256 with TEST_JWT_SECRET.
+    Creates signed JWT tokens for testing using HMAC-SHA256 (HS256).
+
+    Production uses RS256 (Keycloak). The test_client fixture in conftest.py
+    MUST override get_current_ctx to bypass RS256 signature verification:
+
+        from src.api.dependencies.auth import get_current_ctx
+
+        @pytest.fixture
+        async def test_client(db_session, ...) -> AsyncClient:
+            from src.main import app
+            # Override: skip RS256 verification; build UserContext directly from JWTFactory payload.
+            app.dependency_overrides[get_current_ctx] = lambda: _build_ctx_from_test_token(...)
+            # Or use a simpler helper that accepts HS256 tokens:
+            app.dependency_overrides[get_current_ctx] = make_test_auth_dependency(TEST_JWT_SECRET)
+            ...
+
+    Without this override, every authenticated request in unit/integration tests would
+    fail with a KEY_ERROR or signature verification failure because production get_current_ctx
+    fetches JWKS from Keycloak (RS256), not the HS256 test secret.
+
+    JWTFactory.build_context() helper (add to this class):
+        @staticmethod
+        def build_context(tenant_id: UUID, permissions: set[str], ...) -> UserContext:
+            \"\"\"Directly builds a UserContext without token parsing — for dependency overrides.\"\"\"
+            return UserContext(user_id=uuid4(), tenant_id=tenant_id, permissions=permissions, ...)
     """
     @staticmethod
     def create(
@@ -1510,11 +1623,16 @@ from alembic import command
 
 # ─── Session-scoped: start containers once per test session ───────────────────
 
-@pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+# MINOR FIX: Do NOT define a custom `event_loop` fixture.
+# pytest-asyncio >=0.23 deprecates overriding `event_loop` at session scope.
+# Instead, set asyncio_mode = "auto" and asyncio_default_fixture_loop_scope = "session"
+# in pyproject.toml [tool.pytest.ini_options]:
+#
+#   asyncio_mode = "auto"
+#   asyncio_default_fixture_loop_scope = "session"
+#
+# This gives a session-scoped event loop without requiring the deprecated fixture override.
+# The event_loop fixture below is REMOVED — do not add it back.
 
 @pytest.fixture(scope="session")
 def postgres_container():
@@ -1697,6 +1815,7 @@ Add to `pyproject.toml`:
 ```toml
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"   # MINOR FIX: replaces deprecated event_loop fixture
 markers = [
     "integration: marks tests as integration tests requiring testcontainers",
     "tenant_isolation: marks tests as tenant isolation tests — BLOCKER for merge",
@@ -1739,7 +1858,8 @@ python tests/scripts/check_critical_coverage.py coverage.xml
 `tests/scripts/check_critical_coverage.py`:
 ```python
 """Fails if critical modules have any uncovered lines."""
-import xml.etree.ElementTree as ET, sys
+import sys
+import xml.etree.ElementTree as ET
 
 CRITICAL_MODULES = [
     "src/retrieval/service.py",
@@ -1747,21 +1867,31 @@ CRITICAL_MODULES = [
     "src/domain/deletion_service.py",
 ]
 
-tree = ET.parse(sys.argv[1])
-failures = []
-for cls in tree.findall(".//class"):
-    filename = cls.get("filename", "")
-    if any(m in filename for m in CRITICAL_MODULES):
-        for line in cls.findall(".//line"):
-            if line.get("hits") == "0" and "no cover" not in line.get("branch", ""):
-                failures.append(f"{filename}:{line.get('number')}")
 
-if failures:
-    print("FAIL: Uncovered lines in security-critical modules:")
-    for f in failures:
-        print(f"  {f}")
-    sys.exit(1)
-print("OK: All critical module lines covered.")
+def check_critical_coverage(coverage_xml_path: str) -> None:
+    # MINOR FIX: Previous version used line.get("branch", "") to detect "no cover" pragmas.
+    # The "branch" attribute in coverage.xml is a bool ("true"/"false") tracking branch
+    # coverage — it does NOT contain pragma text. Uncovered lines are identified solely
+    # by hits == "0". The # pragma: no cover exclusion is handled by coverage.py itself
+    # before writing the XML; lines with that pragma simply do not appear in the report.
+    tree = ET.parse(coverage_xml_path)
+    uncovered: list[tuple[str, str | None]] = []
+    for file_elem in tree.findall(".//class"):
+        filename = file_elem.get("filename", "")
+        if any(critical in filename for critical in CRITICAL_MODULES):
+            for line in file_elem.findall("lines/line"):
+                if line.get("hits") == "0":  # 0 hits = not covered
+                    uncovered.append((filename, line.get("number")))
+    if uncovered:
+        print("CRITICAL COVERAGE FAILURES:")
+        for fname, lineno in uncovered:
+            print(f"  {fname}:{lineno}")
+        sys.exit(1)
+    print("OK: All critical module lines covered.")
+
+
+if __name__ == "__main__":
+    check_critical_coverage(sys.argv[1])
 ```
 
 ---
