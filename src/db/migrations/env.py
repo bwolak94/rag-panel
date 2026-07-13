@@ -4,18 +4,17 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.pool import NullPool
 
-# Load application models so Alembic can detect schema changes
-# (models are registered in TASK-002)
-# from src.db.models import Base  # uncomment after TASK-002
+# Importing Base triggers registration of all ORM models into metadata.
+from src.db.models import Base  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# target_metadata = Base.metadata  # uncomment after TASK-002
-target_metadata = None
+target_metadata = Base.metadata
 
 
 def get_url() -> str:
@@ -40,7 +39,10 @@ def run_migrations_offline() -> None:
 
 async def run_migrations_online() -> None:
     """Run migrations against a live async DB connection."""
-    engine = create_async_engine(get_url())
+    cfg = config.get_section(config.config_ini_section) or {}
+    cfg["sqlalchemy.url"] = get_url()
+
+    engine = async_engine_from_config(cfg, prefix="sqlalchemy.", poolclass=NullPool)
 
     async with engine.connect() as connection:
         await connection.run_sync(
@@ -48,7 +50,6 @@ async def run_migrations_online() -> None:
                 connection=sync_conn,
                 target_metadata=target_metadata,
                 compare_type=True,
-                # For partitioned tables — include schema comparison
                 include_schemas=True,
             )
         )
