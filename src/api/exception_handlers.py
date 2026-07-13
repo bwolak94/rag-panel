@@ -42,7 +42,8 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(PermissionDeniedError)
     async def permission_denied_handler(req: Request, exc: PermissionDeniedError) -> JSONResponse:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
+        # Generic message — never forward exc detail as it may contain resource identifiers
+        return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
     @app.exception_handler(TenantIsolationError)
     async def tenant_isolation_handler(req: Request, exc: TenantIsolationError) -> JSONResponse:
