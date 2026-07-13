@@ -1,0 +1,35 @@
+"""RetrievalService — the ONLY module with Qdrant access.
+
+This stub exposes the interface used by CollectionService (TASK-005).
+Full Qdrant implementation is in TASK-009.
+"""
+
+from __future__ import annotations
+
+import structlog
+
+logger = structlog.get_logger(__name__)
+
+
+class RetrievalService:
+    """Owns all Qdrant interactions.
+
+    Rules (enforced by architecture):
+    - No other module may import AsyncQdrantClient directly.
+    - Every query must include both tenant_id and collection_id filters.
+    - ensure_collection() is idempotent and creates payload indexes on first call.
+    """
+
+    async def ensure_collection(self, model_slug: str, vector_size: int) -> None:
+        """Ensure a Qdrant collection named `emb_{model_slug}` exists.
+
+        Creates the collection and required payload indexes (tenant_id, collection_id)
+        if they do not already exist.  Idempotent — safe to call on every create.
+
+        Full implementation: TASK-009.
+        """
+        logger.info(
+            "ensure_collection_stub",
+            qdrant_collection=f"emb_{model_slug}",
+            vector_size=vector_size,
+        )
