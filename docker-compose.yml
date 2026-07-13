@@ -1,0 +1,319 @@
+name: rag-platform
+
+# Three networks per architecture.md §18:
+#   proxy_net     — Traefik ↔ application services
+#   internal_net  — application ↔ data services (Postgres, Redis, MinIO, Qdrant, Keycloak)
+#   monitoring_net — application ↔ observability (Prometheus, Grafana, Langfuse)
+
+networks:
+  proxy_net:
+    driver: bridge
+  internal_net:
+    driver: bridge
+    internal: true
+  monitoring_net:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  qdrant_data:
+  keycloak_data:
+  langfuse_data:
+  prometheus_data:
+  grafana_data:
+
+x-common-env: &common-env
+  env_file: .env
+
+services:
+  # ── Infrastructure ────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ragdb
+      POSTGRES_USER: raguser
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-ragpass}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raguser -d ragdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data:/data
+    networks:
+      - internal_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - internal_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    command: start-dev
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: raguser
+      KC_DB_PASSWORD: ${DB_PASSWORD:-ragpass}
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal_net
+      - proxy_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health/ready || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
+  # ── Application ───────────────────────────────────────────
+
+  rag-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    <<: *common-env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://raguser:${DB_PASSWORD:-ragpass}@postgres:5432/ragdb
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      QDRANT_URL: http://qdrant:6333
+      KEYCLOAK_BASE_URL: http://keycloak:8080
+      LANGFUSE_HOST: http://langfuse:3030
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    networks:
+      - proxy_net
+      - internal_net
+      - monitoring_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    user: "1000:1000"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  ingest-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "src.ingest.worker"]
+    <<: *common-env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://raguser:${DB_PASSWORD:-ragpass}@postgres:5432/ragdb
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      QDRANT_URL: http://qdrant:6333
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - internal_net
+      - monitoring_net
+    restart: unless-stopped
+    user: "1000:1000"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  # ── Frontend ──────────────────────────────────────────────
+
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    environment:
+      OPENAI_API_BASE_URL: http://rag-api:8000/v1
+      OPENAI_API_KEY: not-used
+      WEBUI_AUTH: "True"
+    depends_on:
+      rag-api:
+        condition: service_healthy
+    networks:
+      - proxy_net
+      - internal_net
+    restart: unless-stopped
+    user: "1000:1000"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ── Observability ─────────────────────────────────────────
+
+  langfuse:
+    image: langfuse/langfuse:latest
+    environment:
+      DATABASE_URL: postgresql://raguser:${DB_PASSWORD:-ragpass}@postgres:5432/langfuse
+      NEXTAUTH_SECRET: ${SECRET_KEY:-change-me}
+      NEXTAUTH_URL: http://localhost:3030
+      TELEMETRY_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - langfuse_data:/app/.next
+    networks:
+      - internal_net
+      - monitoring_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/public/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring_net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring_net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  # ── Reverse proxy ─────────────────────────────────────────
+
+  traefik:
+    image: traefik:v3.0
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--log.level=INFO"
+    ports:
+      - "80:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - proxy_net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 64m
