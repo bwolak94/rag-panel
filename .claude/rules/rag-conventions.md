@@ -6,7 +6,7 @@
 - Substantive responses always include citations (`message_sources`); no context → explicit "not found in documents", never guessing.
 - Retrieval: top_k=8 default, configurable per pipeline; score threshold cuts noise; parameters in config, not hardcoded.
 - Chunking: strategy per document type from `collections.chunk_config`; default recursive 512 tokens / overlap 64.
-- Embeddings: model per collection (`models_registry`); model change = full re-indexing — never mix vectors from different models in a single Qdrant collection.
+- Embeddings: model per collection (`models_registry`); Qdrant collection name = `emb_{embedding_model_slug}`; model change = full re-indexing — never mix vectors from different models in a single Qdrant collection.
 - Evaluation: every prompt/retrieval/chunking change triggers `tests/eval/` (50 questions + 20 trap questions); faithfulness/relevance regression > 5% blocks merge.
 - LLM through abstraction (OpenAI-compatible client from `models_registry`); binding code to a specific provider is forbidden.
 - Ingest: every stage reports status to `ingestion_jobs`; operations are idempotent (document hash, upsert by deterministic point_id).

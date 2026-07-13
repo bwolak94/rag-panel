@@ -7,7 +7,9 @@
 Self-hosted, multi-tenant RAG platform (pilot: medical clinic, eventually any organisation).
 Stack: Python 3.12, FastAPI, LangGraph + LangChain, Qdrant, PostgreSQL 16, MinIO (event-driven ingest via Redis Streams), Ollama/vLLM, Open WebUI (frontend), Keycloak (OIDC), Langfuse.
 
-Project documentation: `docs/` — PRD, Architecture (ADRs!), API Specification, Data Model, Security-GDPR, Roadmap. **Always read the relevant document before implementing and update it after changes.**
+Project documentation: `docs/` — PRD, Architecture (ADRs!), API Specification, Data Model, Security-GDPR, Roadmap, Reference Repos. **Always read the relevant document before implementing and update it after changes.**
+
+Reference analysis of comparable open-source RAG systems: `docs/reference-repos.md` — read before designing RBAC, permission model, citation format, ingest parsing, or K8s deployment.
 
 ## Reguły (importy)
 
