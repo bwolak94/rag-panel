@@ -20,6 +20,7 @@ dependencies = [
     "qdrant-client>=1.12",
     "langfuse>=2.0",
     "openai>=1.50",
+    "cachetools>=5.3",
 ]
 
 [dependency-groups]
@@ -35,6 +36,8 @@ dev = [
     "aiosqlite>=0.20",
     "types-python-jose>=3.3",
     "types-redis>=4.6",
+    "types-cachetools>=5.3",
+    "cryptography>=42.0",
 ]
 
 [build-system]
@@ -51,7 +54,7 @@ exclude = ["src/db/migrations/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "ANN"]
-ignore = ["ANN401"]
+ignore = ["ANN401", "PLW0603"]
 
 [tool.mypy]
 python_version = "3.12"
