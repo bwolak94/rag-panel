@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from src.api.exception_handlers import register_exception_handlers
-from src.api.routers import health
+from src.api.routers import collections, health, tenants
 from src.core.config import settings
 from src.core.logging import configure_logging
 
@@ -53,6 +53,8 @@ def create_app() -> FastAPI:
 
     # Routers
     app.include_router(health.router)
+    app.include_router(collections.router, prefix="/api/v1")
+    app.include_router(tenants.router, prefix="/api/v1")
 
     return app
 
