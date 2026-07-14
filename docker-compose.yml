@@ -24,6 +24,7 @@ volumes:
   langfuse_data:
   prometheus_data:
   grafana_data:
+  openwebui_data:
 
 x-common-env: &common-env
   env_file: .env
@@ -39,8 +40,11 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-ragpass}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
     networks:
       - internal_net
+      - proxy_net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U raguser -d ragdb"]
       interval: 10s
@@ -100,7 +104,7 @@ services:
     networks:
       - internal_net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null && echo ok || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -130,7 +134,7 @@ services:
       - internal_net
       - proxy_net
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/health/ready || exit 1"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/8080' 2>/dev/null && echo ok || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 10
@@ -166,12 +170,15 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
+    ports:
+      - "8000:8000"
     networks:
       - proxy_net
       - internal_net
       - monitoring_net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      test: ["CMD", "/app/.venv/bin/python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -221,6 +228,13 @@ services:
       OPENAI_API_BASE_URL: http://rag-api:8000/v1
       OPENAI_API_KEY: not-used
       WEBUI_AUTH: "True"
+      WEBUI_SECRET_KEY: dev-secret-change-in-production
+      RAG_EMBEDDING_ENGINE: ""          # disable built-in RAG so no model download needed
+      ENABLE_RAG_WEB_SEARCH: "false"
+    volumes:
+      - openwebui_data:/app/backend/data
+    ports:
+      - "3000:8080"
     depends_on:
       rag-api:
         condition: service_healthy
@@ -228,11 +242,6 @@ services:
       - proxy_net
       - internal_net
     restart: unless-stopped
-    user: "1000:1000"
-    deploy:
-      resources:
-        limits:
-          memory: 512m
 
   # ── Observability ─────────────────────────────────────────
 

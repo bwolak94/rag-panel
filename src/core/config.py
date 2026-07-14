@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     # Ingest
     INGEST_NODE_MAX_RETRIES: int = 3
     INGEST_PRESIGNED_URL_TTL_SECONDS: int = 300  # 5 minutes maximum
+    MINIO_WEBHOOK_SECRET: str  # Shared secret for MinIO → API webhook authentication
 
     # RAG
     RETRIEVAL_TOP_K: int = 8

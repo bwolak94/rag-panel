@@ -8,7 +8,8 @@ from fastapi import FastAPI
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from src.api.exception_handlers import register_exception_handlers
-from src.api.routers import collections, health, tenants
+from src.api.routers import chat, collections, conversations, documents, health, messages, tenants
+from src.api.routers.webhooks import webhook_router
 from src.core.config import settings
 from src.core.logging import configure_logging
 
@@ -18,7 +19,6 @@ logger = structlog.get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup and shutdown lifecycle management."""
-    configure_logging(level="DEBUG" if settings.DEBUG else "INFO")
     logger.info("startup", version=settings.APP_VERSION, environment=settings.ENVIRONMENT)
 
     # Warm up Postgres connection pool
@@ -36,6 +36,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 def create_app() -> FastAPI:
     """Application factory — creates and configures the FastAPI app."""
+    # Configure logging early so module-level loggers get the right factory before caching
+    configure_logging(level="DEBUG" if settings.DEBUG else "INFO")
+
     app = FastAPI(
         title="RAG Platform API",
         version=settings.APP_VERSION,
@@ -55,6 +58,11 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(collections.router, prefix="/api/v1")
     app.include_router(tenants.router, prefix="/api/v1")
+    app.include_router(documents.router)      # /api/v1/documents
+    app.include_router(chat.router)           # /v1/models, /v1/chat/completions
+    app.include_router(conversations.router)  # /conversations
+    app.include_router(messages.router)       # /messages/{id}/feedback
+    app.include_router(webhook_router)        # /internal/minio-webhook
 
     return app
 

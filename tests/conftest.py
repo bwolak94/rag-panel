@@ -24,6 +24,7 @@ _TEST_ENV_DEFAULTS = {
     "KEYCLOAK_AUDIENCE": "rag-api",
     "LLM_BASE_URL": "http://localhost:11434/v1",
     "EMBEDDING_BASE_URL": "http://localhost:11434/v1",
+    "MINIO_WEBHOOK_SECRET": "test-webhook-secret",
 }
 for _key, _val in _TEST_ENV_DEFAULTS.items():
     os.environ.setdefault(_key, _val)
@@ -54,6 +55,7 @@ def override_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     monkeypatch.setenv("KEYCLOAK_AUDIENCE", "rag-api")
     monkeypatch.setenv("LLM_BASE_URL", "http://localhost:11434/v1")
     monkeypatch.setenv("EMBEDDING_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("MINIO_WEBHOOK_SECRET", "test-webhook-secret")
     return monkeypatch
 
 

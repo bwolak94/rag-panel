@@ -8,12 +8,15 @@ WORKDIR /app
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Install dependencies (cached layer)
+# Install dependencies and project (cached layer — run as root so venv is writable at build time)
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev
 
 # Copy application source
 COPY src/ ./src/
+
+# Fix ownership so the app user can read the venv
+RUN chown -R app:app /app
 
 # Switch to non-root user
 USER app
@@ -21,4 +24,5 @@ USER app
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
-CMD ["uv", "run", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use venv's uvicorn directly (avoids uv trying to re-sync at startup)
+CMD ["/app/.venv/bin/uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

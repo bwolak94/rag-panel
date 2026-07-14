@@ -40,3 +40,7 @@ class AuthenticationError(RAGPlatformError):
 
 class ServiceUnavailableError(RAGPlatformError):
     """Upstream service (LLM, Qdrant) unavailable. Maps to HTTP 503."""
+
+
+class LLMUnavailableError(ServiceUnavailableError):
+    """LLM unreachable after retries. Maps to HTTP 503 with Retry-After: 60."""
