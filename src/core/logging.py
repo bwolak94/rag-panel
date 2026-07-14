@@ -16,10 +16,19 @@ def configure_logging(*, level: str = "INFO") -> None:
     Call once at application startup (inside lifespan). Subsequent calls
     are idempotent due to `cache_logger_on_first_use=True`.
     """
+    log_level = logging.getLevelName(level)
+
+    # Route stdlib logging → stdout so structlog's stdlib factory output is visible
+    logging.basicConfig(
+        format="%(message)s",
+        stream=sys.stdout,
+        level=log_level,
+    )
+
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
-        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_logger_name,  # requires stdlib LoggerFactory (has .name)
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
     ]
@@ -29,7 +38,7 @@ def configure_logging(*, level: str = "INFO") -> None:
             *shared_processors,
             structlog.processors.JSONRenderer(),
         ],
-        wrapper_class=structlog.make_filtering_bound_logger(logging.getLevelName(level)),
-        logger_factory=structlog.PrintLoggerFactory(sys.stdout),
+        wrapper_class=structlog.make_filtering_bound_logger(log_level),
+        logger_factory=structlog.stdlib.LoggerFactory(),  # stdlib loggers have .name
         cache_logger_on_first_use=True,
     )
