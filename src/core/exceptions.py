@@ -44,3 +44,11 @@ class ServiceUnavailableError(RAGPlatformError):
 
 class LLMUnavailableError(ServiceUnavailableError):
     """LLM unreachable after retries. Maps to HTTP 503 with Retry-After: 60."""
+
+
+class IngestNodeError(RAGPlatformError):
+    """Raised by ingest graph nodes on recoverable or unrecoverable pipeline errors.
+
+    Caught by EventProcessor: if retriable, schedules backoff; if not, routes to DLQ.
+    Must never contain document content, PII, or raw bytes in the message.
+    """

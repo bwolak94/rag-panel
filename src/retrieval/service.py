@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import structlog
 
+from src.retrieval.schemas import QdrantPoint, TenantContext
+
 logger = structlog.get_logger(__name__)
 
 
@@ -32,4 +34,20 @@ class RetrievalService:
             "ensure_collection_stub",
             qdrant_collection=f"emb_{model_slug}",
             vector_size=vector_size,
+        )
+
+    async def upsert_batch(self, ctx: TenantContext, points: list[QdrantPoint]) -> None:
+        """Upsert a batch of Qdrant points into the tenant-scoped collection.
+
+        The target collection is resolved from the embedding model slug stored
+        in the collection record. Naming: ``emb_{embedding_model_slug}``.
+
+        Payload MUST contain ``tenant_id`` field to allow mandatory tenant filter.
+
+        Full implementation: TASK-009.
+        """
+        logger.info(
+            "upsert_batch_stub",
+            tenant_id=str(ctx.tenant_id),
+            point_count=len(points),
         )
