@@ -16,6 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies.auth import get_current_ctx
+from src.api.dependencies.retrieval import get_retrieval_service
 from src.api.schemas.collection import (
     ChunkConfig,
     CollectionListResponse,
@@ -93,6 +94,7 @@ def _make_app(ctx: UserContext):
 
     app.dependency_overrides[get_current_ctx] = lambda: ctx
     app.dependency_overrides[get_db_session] = _fake_session
+    app.dependency_overrides[get_retrieval_service] = lambda: MagicMock()
     return app
 
 

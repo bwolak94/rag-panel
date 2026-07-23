@@ -56,9 +56,12 @@ def _make_config(session: object, retrieval: object) -> dict:
     return {"configurable": {"db": session, "retrieval": retrieval}}
 
 
-def _make_session() -> AsyncMock:
+def _make_session(model_name: str = "BGE-M3") -> AsyncMock:
     session = AsyncMock()
-    session.execute = AsyncMock(return_value=MagicMock())
+    # scalar_one_or_none() returns model_name for the embedding model lookup
+    scalar_result = MagicMock()
+    scalar_result.scalar_one_or_none.return_value = model_name
+    session.execute = AsyncMock(return_value=scalar_result)
     session.commit = AsyncMock()
     return session
 
@@ -81,9 +84,11 @@ async def test_upsert_calls_retrieval_service() -> None:
         result = await node_upsert(state, _make_config(session, retrieval))
 
     retrieval.upsert_batch.assert_called_once()
-    call_ctx, call_points = retrieval.upsert_batch.call_args[0]
+    call_ctx, call_collection, call_points = retrieval.upsert_batch.call_args[0]
     assert isinstance(call_ctx, TenantContext)
     assert call_ctx.tenant_id == TENANT_ID
+    assert call_ctx.allowed_collection_ids == [COLLECTION_ID]
+    assert call_collection == "emb_bge_m3"
     assert len(call_points) == n
     assert len(result["point_ids"]) == n
 
@@ -98,7 +103,9 @@ async def test_upsert_payload_contains_tenant_id() -> None:
     retrieval = MagicMock(spec=RetrievalService)
     captured_points: list[QdrantPoint] = []
 
-    async def capture_upsert(ctx: TenantContext, points: list[QdrantPoint]) -> None:
+    async def capture_upsert(
+        ctx: TenantContext, qdrant_collection: str, points: list[QdrantPoint]
+    ) -> None:
         captured_points.extend(points)
 
     retrieval.upsert_batch = capture_upsert

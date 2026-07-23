@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 from prometheus_fastapi_instrumentator import Instrumentator
+from qdrant_client import AsyncQdrantClient
 
 from src.api.exception_handlers import register_exception_handlers
 from src.api.routers import chat, collections, conversations, documents, health, messages, tenants
@@ -27,11 +28,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async with engine.begin() as conn:
         await conn.run_sync(lambda _: None)
 
+    # Initialize Qdrant client
+    app.state.qdrant_client = AsyncQdrantClient(
+        url=str(settings.QDRANT_URL),
+        api_key=settings.QDRANT_API_KEY,
+        timeout=10,
+    )
+
     yield
 
     # Graceful shutdown
     logger.info("shutdown")
     await engine.dispose()
+    await app.state.qdrant_client.close()
 
 
 def create_app() -> FastAPI:
@@ -58,11 +67,11 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(collections.router, prefix="/api/v1")
     app.include_router(tenants.router, prefix="/api/v1")
-    app.include_router(documents.router)      # /api/v1/documents
-    app.include_router(chat.router)           # /v1/models, /v1/chat/completions
+    app.include_router(documents.router)  # /api/v1/documents
+    app.include_router(chat.router)  # /v1/models, /v1/chat/completions
     app.include_router(conversations.router)  # /conversations
-    app.include_router(messages.router)       # /messages/{id}/feedback
-    app.include_router(webhook_router)        # /internal/minio-webhook
+    app.include_router(messages.router)  # /messages/{id}/feedback
+    app.include_router(webhook_router)  # /internal/minio-webhook
 
     return app
 
