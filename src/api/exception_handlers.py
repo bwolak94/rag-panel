@@ -20,6 +20,7 @@ from src.core.exceptions import (
     ServiceUnavailableError,
     TenantIsolationError,
 )
+from src.retrieval.exceptions import EmptyCollectionListError, QdrantUnavailableError
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -66,4 +67,23 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=503,
             content={"detail": str(exc)},
             headers={"Retry-After": "60"},
+        )
+
+    @app.exception_handler(QdrantUnavailableError)
+    async def qdrant_unavailable_handler(
+        req: Request, exc: QdrantUnavailableError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Vector store unavailable, please try again later"},
+            headers={"Retry-After": "60"},
+        )
+
+    @app.exception_handler(EmptyCollectionListError)
+    async def empty_collection_list_handler(
+        req: Request, exc: EmptyCollectionListError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "No accessible collections for this request"},
         )

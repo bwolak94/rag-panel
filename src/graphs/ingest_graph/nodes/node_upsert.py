@@ -13,9 +13,12 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.exceptions import IngestNodeError
+from src.db.models.collection import Collection
+from src.db.models.models_registry import ModelsRegistry
 from src.graphs.ingest_graph.helpers import update_step, utcnow
 from src.graphs.ingest_graph.state import IngestState
 from src.retrieval.schemas import QdrantPoint, TenantContext
@@ -39,7 +42,7 @@ async def node_upsert(state: IngestState, config: dict[str, Any]) -> dict[str, A
     """
     cfg = config.get("configurable", {})
     session: AsyncSession = cfg["db"]
-    retrieval: RetrievalService = cfg.get("retrieval") or RetrievalService()
+    retrieval: RetrievalService = cfg["retrieval"]
     step_start = utcnow()
 
     try:
@@ -53,7 +56,27 @@ async def node_upsert(state: IngestState, config: dict[str, Any]) -> dict[str, A
                 f"chunk/embedding mismatch: {len(chunks)} chunks vs {len(embeddings)} vectors"
             )
 
-        ctx = TenantContext(tenant_id=state.tenant_id)
+        # Resolve Qdrant collection name: emb_{model_slug}
+        model_name_q = (
+            select(ModelsRegistry.name)
+            .join(Collection, Collection.embedding_model_id == ModelsRegistry.id)
+            .where(
+                Collection.id == state.collection_id,
+                Collection.tenant_id == state.tenant_id,
+            )
+        )
+        model_name: str | None = (await session.execute(model_name_q)).scalar_one_or_none()
+        if model_name is None:
+            raise IngestNodeError(
+                f"collection {state.collection_id} not found or has no embedding model"
+            )
+        model_slug = model_name.lower().replace("-", "_").replace(" ", "_")
+        qdrant_collection = f"emb_{model_slug}"
+
+        ctx = TenantContext(
+            tenant_id=state.tenant_id,
+            allowed_collection_ids=[state.collection_id],
+        )
         points: list[QdrantPoint] = []
         now_ts = int(utcnow().timestamp())
 
@@ -75,7 +98,7 @@ async def node_upsert(state: IngestState, config: dict[str, Any]) -> dict[str, A
                 )
             )
 
-        await retrieval.upsert_batch(ctx, points)
+        await retrieval.upsert_batch(ctx, qdrant_collection, points)
 
         point_ids: list[UUID] = [p.id for p in points]
         await update_step(

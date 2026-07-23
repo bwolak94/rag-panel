@@ -21,6 +21,7 @@ from src.api.schemas.collection import (
     CollectionResponse,
     CollectionUpdate,
 )
+from src.api.dependencies.retrieval import get_retrieval_service
 from src.core.database import get_db_session
 from src.domain.auth import UserContext
 from src.domain.collection_service import CollectionService
@@ -34,8 +35,8 @@ _require_admin = require_permission("admin:collections")
 _require_read = require_permission("documents:read")
 
 
-def _get_service(session: AsyncSession) -> CollectionService:
-    return CollectionService(session, RetrievalService())
+def _get_service(session: AsyncSession, retrieval_svc: RetrievalService) -> CollectionService:
+    return CollectionService(session, retrieval_svc)
 
 
 @router.post(
@@ -50,9 +51,12 @@ async def create_collection(
     ctx: Annotated[UserContext, Depends(get_current_ctx)],
     _: Annotated[None, Depends(_require_admin)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    retrieval_svc: Annotated[RetrievalService, Depends(get_retrieval_service)],
 ) -> CollectionResponse:
     ip = request.client.host if request.client else None
-    return await _get_service(session).create_collection(body, ctx, ip)
+    result = await _get_service(session, retrieval_svc).create_collection(body, ctx, ip)
+    await session.commit()
+    return result
 
 
 @router.get(
@@ -64,6 +68,7 @@ async def list_collections(
     ctx: Annotated[UserContext, Depends(get_current_ctx)],
     _: Annotated[None, Depends(_require_read)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    retrieval_svc: Annotated[RetrievalService, Depends(get_retrieval_service)],
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
     include_inactive: bool = Query(
         default=False, description="Include archived collections (requires admin:collections)"
@@ -74,7 +79,7 @@ async def list_collections(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="admin:collections permission required to list inactive collections",
         )
-    return await _get_service(session).list_collections(
+    return await _get_service(session, retrieval_svc).list_collections(
         ctx,
         include_inactive=include_inactive,
         offset=pagination.offset,
@@ -94,6 +99,7 @@ async def get_collection(
     ctx: Annotated[UserContext, Depends(get_current_ctx)],
     _: Annotated[None, Depends(_require_read)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    retrieval_svc: Annotated[RetrievalService, Depends(get_retrieval_service)],
 ) -> CollectionResponse:
     from uuid import UUID
 
@@ -105,7 +111,7 @@ async def get_collection(
             detail="Invalid collection_id format",
         ) from exc
 
-    return await _get_service(session).get_collection(cid, ctx)
+    return await _get_service(session, retrieval_svc).get_collection(cid, ctx)
 
 
 @router.patch(
@@ -120,6 +126,7 @@ async def update_collection(
     ctx: Annotated[UserContext, Depends(get_current_ctx)],
     _: Annotated[None, Depends(_require_admin)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    retrieval_svc: Annotated[RetrievalService, Depends(get_retrieval_service)],
 ) -> CollectionResponse:
     from uuid import UUID
 
@@ -142,7 +149,9 @@ async def update_collection(
         )
 
     ip = request.client.host if request.client else None
-    return await _get_service(session).update_collection(cid, body, ctx, ip)
+    result = await _get_service(session, retrieval_svc).update_collection(cid, body, ctx, ip)
+    await session.commit()
+    return result
 
 
 @router.delete(
@@ -156,6 +165,7 @@ async def delete_collection(
     ctx: Annotated[UserContext, Depends(get_current_ctx)],
     _: Annotated[None, Depends(_require_admin)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    retrieval_svc: Annotated[RetrievalService, Depends(get_retrieval_service)],
 ) -> None:
     from uuid import UUID
 
@@ -168,4 +178,5 @@ async def delete_collection(
         ) from exc
 
     ip = request.client.host if request.client else None
-    await _get_service(session).delete_collection(cid, ctx, ip)
+    await _get_service(session, retrieval_svc).delete_collection(cid, ctx, ip)
+    await session.commit()
