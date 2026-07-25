@@ -23,6 +23,10 @@ class ChatCompletionRequest(BaseModel):
 
 class MessageSourceOut(BaseModel):
     document_id: str
+    collection_id: str
+    document_title: str
+    section_heading: str | None = None
+    source_url: str | None = None
     chunk_id: str | None = None
     page_number: int | None = None
     highlight_text: str | None = None

@@ -347,3 +347,26 @@ class RetrievalService:
             vector_size=vector_size,
             distance=distance,
         )
+
+
+def get_retrieval_service(timeout: int = 10) -> "RetrievalService":
+    """Factory: create a RetrievalService from application settings.
+
+    This is the ONLY place outside RetrievalService itself that may instantiate
+    AsyncQdrantClient. Call this from domain services instead of importing
+    qdrant_client directly.
+
+    Args:
+        timeout: Qdrant client timeout in seconds.
+
+    Returns:
+        RetrievalService backed by an AsyncQdrantClient.
+    """
+    from src.core.config import settings
+
+    client = AsyncQdrantClient(
+        url=str(settings.QDRANT_URL),
+        api_key=settings.QDRANT_API_KEY,
+        timeout=timeout,
+    )
+    return RetrievalService(client=client)

@@ -1,7 +1,7 @@
 """Chat router — OpenAI-compatible completions and model listing.
 
 GET  /v1/models             — list active RAG pipelines as OpenAI models
-POST /v1/chat/completions   — run RAG query graph (stub until TASK-010)
+POST /v1/chat/completions   — run RAG query graph
 
 Security:
 - Requires `chat:query` permission.
@@ -93,7 +93,7 @@ async def list_models(
 @router.post(
     "/chat/completions",
     response_model=None,  # Union with StreamingResponse not representable as a Pydantic model
-    summary="OpenAI-compatible chat completion (RAG stub until TASK-010)",
+    summary="OpenAI-compatible chat completion (LangGraph RAG query graph)",
 )
 async def chat_completions(
     body: ChatCompletionRequest,

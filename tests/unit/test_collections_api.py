@@ -7,7 +7,7 @@ CollectionService is patched at the router level — no DB or Qdrant needed.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -66,7 +66,7 @@ def _make_embedding_model_ref() -> EmbeddingModelRef:
 
 
 def _make_collection_response(**overrides: Any) -> CollectionResponse:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     defaults: dict[str, Any] = {
         "id": COLLECTION_ID,
         "tenant_id": TENANT_ID,

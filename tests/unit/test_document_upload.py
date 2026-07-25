@@ -6,7 +6,7 @@ DocumentService is patched — no real DB, MinIO, or Redis needed.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -61,7 +61,7 @@ def _make_upload_response() -> DocumentUploadResponse:
         job_id=JOB_ID,
         upload_url="http://minio:9000/tenant-test/raw/presigned",
         minio_key=f"raw/{WRITABLE_COLLECTION_ID}/{DOCUMENT_ID}/test.pdf",
-        expires_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(UTC),
     )
 
 

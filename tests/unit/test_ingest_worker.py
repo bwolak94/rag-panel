@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,7 +30,7 @@ _VALID_FIELDS = {
     "minio_key": f"raw/{COLLECTION_ID}/{DOCUMENT_ID}/report.pdf",
     "size_bytes": "1024",
     "content_type": "application/pdf",
-    "published_at": datetime.now(timezone.utc).isoformat(),
+    "published_at": datetime.now(UTC).isoformat(),
 }
 
 
@@ -111,10 +111,9 @@ async def test_event_processor_max_retries_exceeded_raises() -> None:
         patch(
             "src.ingest.event_processor.IngestionJobRepository.get_active_job",
             new=AsyncMock(return_value=job),
-        ),
+        ),pytest.raises(MaxRetriesExceededError) as exc_info
     ):
-        with pytest.raises(MaxRetriesExceededError) as exc_info:
-            await processor.process(session, _VALID_FIELDS)
+        await processor.process(session, _VALID_FIELDS)
 
     assert "max_retries_exceeded" in str(exc_info.value)
 
@@ -128,9 +127,8 @@ async def test_event_processor_document_not_found_raises() -> None:
     with patch(
         "src.ingest.event_processor.DocumentRepository.get_by_id",
         new=AsyncMock(return_value=None),
-    ):
-        with pytest.raises(MaxRetriesExceededError) as exc_info:
-            await processor.process(session, _VALID_FIELDS)
+    ), pytest.raises(MaxRetriesExceededError) as exc_info:
+        await processor.process(session, _VALID_FIELDS)
 
     assert "document_not_found" in str(exc_info.value)
 

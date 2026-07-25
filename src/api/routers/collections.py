@@ -15,13 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies.auth import get_current_ctx, require_permission
 from src.api.dependencies.pagination import PaginationParams, get_pagination
+from src.api.dependencies.retrieval import get_retrieval_service
 from src.api.schemas.collection import (
     CollectionCreate,
     CollectionListResponse,
     CollectionResponse,
     CollectionUpdate,
 )
-from src.api.dependencies.retrieval import get_retrieval_service
 from src.core.database import get_db_session
 from src.domain.auth import UserContext
 from src.domain.collection_service import CollectionService

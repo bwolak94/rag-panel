@@ -17,7 +17,6 @@ from src.retrieval.exceptions import EmptyCollectionListError, QdrantUnavailable
 from src.retrieval.schemas import QdrantPoint, RetrievalResult, TenantContext
 from src.retrieval.service import RetrievalService
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -303,9 +302,8 @@ async def test_search_raises_after_max_retries() -> None:
     client.query_points.side_effect = Exception("Qdrant down")
 
     ctx = make_ctx()
-    with patch("asyncio.sleep"):
-        with pytest.raises(QdrantUnavailableError):
-            await service.search(ctx, "emb_bge_m3", [0.1])
+    with patch("asyncio.sleep"), pytest.raises(QdrantUnavailableError):
+        await service.search(ctx, "emb_bge_m3", [0.1])
 
     # stop_after_attempt(2) → 2 total attempts
     assert client.query_points.call_count == 2

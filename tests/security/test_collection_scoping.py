@@ -12,12 +12,11 @@ These tests verify:
 from __future__ import annotations
 
 import uuid
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.api.schemas.collection import ChunkConfig, CollectionCreate, ValidationConfig
+from src.api.schemas.collection import CollectionCreate
 from src.domain.auth import UserContext
 from src.retrieval.service import RetrievalService
 
@@ -59,10 +58,9 @@ class TestTenantIsolation:
         A user from tenant A requesting collection_id owned by tenant B receives None
         (→ 404), not the actual row — even if they know the UUID.
         """
-        from sqlalchemy import select
-        from unittest.mock import AsyncMock, MagicMock
-        from src.db.repositories.collection_repository import CollectionRepository
         from sqlalchemy.ext.asyncio import AsyncSession
+
+        from src.db.repositories.collection_repository import CollectionRepository
 
         session = MagicMock(spec=AsyncSession)
         repo = CollectionRepository(session)
@@ -85,9 +83,9 @@ class TestTenantIsolation:
     @pytest.mark.asyncio
     async def test_list_collections_scoped_to_allowed_ids(self) -> None:
         """list_by_tenant only returns collections in allowed_collection_ids."""
-        from unittest.mock import AsyncMock, MagicMock
-        from src.db.repositories.collection_repository import CollectionRepository
         from sqlalchemy.ext.asyncio import AsyncSession
+
+        from src.db.repositories.collection_repository import CollectionRepository
 
         session = MagicMock(spec=AsyncSession)
         repo = CollectionRepository(session)
@@ -131,11 +129,11 @@ class TestTenantIsolation:
         ADR-1: Qdrant collection name = `emb_{model_slug}` (shared across all tenants).
         This test verifies CollectionService calls ensure_collection with the model slug.
         """
-        from unittest.mock import AsyncMock, MagicMock, patch
         from sqlalchemy.ext.asyncio import AsyncSession
-        from src.domain.collection_service import CollectionService
+
         from src.db.models.collection import Collection
         from src.db.models.models_registry import ModelsRegistry
+        from src.domain.collection_service import CollectionService
 
         now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
 
@@ -190,10 +188,10 @@ class TestTenantIsolation:
     @pytest.mark.asyncio
     async def test_list_collections_tenant_b_user_sees_only_tenant_b_data(self) -> None:
         """CollectionRepository filters by tenant_id — tenant B user never sees tenant A data."""
-        from unittest.mock import AsyncMock, MagicMock
-        from src.db.repositories.collection_repository import CollectionRepository
         from sqlalchemy.ext.asyncio import AsyncSession
+
         from src.db.models.collection import Collection
+        from src.db.repositories.collection_repository import CollectionRepository
 
         tenant_b_col = MagicMock(spec=Collection)
         tenant_b_col.id = COL_B

@@ -382,52 +382,67 @@ sequenceDiagram
 ```mermaid
 graph TD
     A[Input: question + user_ctx] --> B[classify_intent]
-    B -->|small talk / out-of-scope| Z[Answer without retrieval<br/>+ industry disclaimer]
+    B -->|small talk / out-of-scope| Z[Answer without retrieval<br/>+ canned refusal]
     B -->|topical question| C[rewrite_query<br/>rewrite + optional decomposition]
     C --> D[retrieve<br/>Qdrant: top-k with filter<br/>tenant + allowed collections]
     D --> E[grade_documents<br/>LLM grades chunk relevance]
     E -->|sufficient context| F[generate<br/>answer with citations]
-    E -->|weak context, retry < 2| C2[refine_query] --> D
     E -->|no context| G[answer_not_found<br/>explicit: did not find in documents]
     F --> H[guardrails_output<br/>PII filter, industry disclaimer,<br/>prompt injection defense]
     G --> H
     Z --> H
-    H --> I[persist<br/>message + sources + metrics + audit]
+    H --> I[Return CompletionResult<br/>ChatService persists message + sources]
+
+    style C2 stroke-dasharray: 5 5
+    E -.->|Phase 2: weak context, retry < 2| C2[refine_query] -.-> D
 ```
 
-### Graph State
+> **Note (ADR-9):** The `persist` node was removed -- `ChatService` owns message persistence.
+> The `refine_query` loop (dashed) is deferred to Phase 2.
+
+### Graph State (ADR-9: Pydantic BaseModel, not TypedDict)
 
 ```python
-class QueryGraphState(TypedDict):
+class QueryState(BaseModel):
+    # Input (set by ChatService before invocation)
     question: str
-    rewritten_query: str | None
-    user_ctx: UserContext          # tenant_id, user_id, roles, allowed_collection_ids
-    pipeline_config: PipelineConfig  # collection_ids, llm_model_id, prompt_config, guardrails
-    retrieved_chunks: list[Chunk]
-    graded_chunks: list[GradedChunk]
-    retry_count: int
-    answer: str
-    citations: list[Citation]     # doc_id, chunk_id, page, section, highlight_text, score
-    model_id: str
-    prompt_tokens: int
-    completion_tokens: int
-    latency_ms: float
+    conversation_history: list[dict[str, str]] = []  # prior messages for multi-turn
+    tenant_id: UUID
+    user_id: UUID
+    allowed_collection_ids: list[UUID]
+    pipeline_config: dict[str, Any]  # snapshot of RagPipeline fields
+
+    # Intermediate (populated by nodes)
+    intent: str | None = None           # "topical" | "chitchat" | "out_of_scope"
+    rewritten_query: str | None = None
+    retrieved_chunks: list[dict[str, Any]] = []   # RetrievalResult dicts
+    graded_chunks: list[dict[str, Any]] = []      # chunks that passed relevance grading
+    retry_count: int = 0                # reserved for Phase 2 refine_query loop
+
+    # Output (read by ChatService after invocation)
+    answer: str = ""
+    citations: list[dict[str, Any]] = []  # doc_id, chunk_id, page, highlight_text, score
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    error: str | None = None
 ```
 
 ### Node Contracts
 
 | Node | Input from state | Output to state | External calls |
 |---|---|---|---|
-| `classify_intent` | question | intent (enum) | LLM |
-| `rewrite_query` | question, retrieved_chunks (if retry) | rewritten_query | LLM |
-| `retrieve` | rewritten_query, user_ctx, pipeline_config | retrieved_chunks | RetrievalService -> Qdrant |
-| `grade_documents` | question, retrieved_chunks | graded_chunks | LLM |
-| `refine_query` | question, graded_chunks | rewritten_query, retry_count++ | LLM |
-| `generate` | question, graded_chunks, pipeline_config | answer, citations, token counts | LLM |
-| `guardrails_output` | answer, pipeline_config.guardrails | answer (sanitized) | Rule-based + optional LLM |
-| `persist` | full state | -- | Postgres, Langfuse |
+| `classify_intent` | question | intent | LLM (via configurable) |
+| `rewrite_query` | question, conversation_history, intent | rewritten_query | LLM (via configurable) |
+| `retrieve` | rewritten_query, tenant_id, allowed_collection_ids, pipeline_config | retrieved_chunks | RetrievalService (via configurable) + LLM embeddings |
+| `grade_documents` | question, retrieved_chunks | graded_chunks | LLM (via configurable) |
+| `generate` | question, graded_chunks, conversation_history, pipeline_config | answer, citations, prompt_tokens, completion_tokens | LLM (via configurable) |
+| `guardrails_output` | answer, pipeline_config.guardrails | answer (sanitized) | Rule-based (no LLM in MVP) |
 
-**Checkpointer:** PostgreSQL (LangGraph Postgres checkpointer). Each graph invocation creates a checkpoint per node for debugging and resumption.
+> **Removed nodes (ADR-9):**
+> - `refine_query` -- deferred to Phase 2 (retry_count field reserved in state).
+> - `persist` -- responsibility of `ChatService`, not the graph.
+
+**Checkpointer:** None (ADR-9). Query execution is stateless per-request. Langfuse tracing provides debugging visibility.
 
 ---
 
@@ -836,6 +851,91 @@ class RetrievalService:
 - `src/core/clients/qdrant_client.py` does NOT contain `AsyncQdrantClient`. The file either does not exist or only contains configuration helpers (URL string construction, etc.) without importing `qdrant_client`.
 - `TASK-016` import linter `test_no_direct_qdrant_import_outside_retrieval` passes.
 - `CollectionService` has `RetrievalService` as a constructor dependency (injected via FastAPI `Depends`).
+
+### ADR-9: Query Graph Implementation (TASK-010)
+
+**Status:** Accepted
+**Date:** 2026-07-23
+
+**Context:**
+`ChatService._invoke_graph()` is a stub returning a placeholder string. TASK-010 replaces it with a real LangGraph query graph that performs retrieval-augmented generation. The architecture doc section 7 already defines the target topology; this ADR records the implementation decisions that deviate from or refine the original design.
+
+Key constraints:
+- The ingest graph (`src/graphs/ingest_graph/`) sets the structural precedent: Pydantic `BaseModel` state, nodes as `node_<name>.py` files, services injected via `config["configurable"]`.
+- `RetrievalService` is the sole Qdrant access point (ADR-8, `security.md`).
+- `ChatService` already persists `Message` rows and owns the transaction boundary; the graph must not duplicate this.
+- The platform serves medical data; conservative retrieval thresholds and output guardrails are required.
+
+**Decision:**
+
+**1. Module structure.** The query graph lives in `src/graphs/query_graph/` mirroring the ingest graph layout:
+
+```
+src/graphs/query_graph/
+    __init__.py
+    state.py          # QueryState (Pydantic BaseModel)
+    graph.py          # build_query_graph(), invoke_query_graph()
+    routing.py        # Conditional edge functions
+    nodes/
+        __init__.py
+        node_classify_intent.py
+        node_rewrite_query.py
+        node_retrieve.py
+        node_grade_documents.py
+        node_generate.py
+        node_guardrails_output.py
+```
+
+**2. QueryState as Pydantic BaseModel.** Following `IngestState`, the query graph state is a Pydantic `BaseModel` (not `TypedDict`). This gives runtime validation, serialization, and consistency with the ingest graph. The state includes: `question`, `conversation_history` (list of prior messages for multi-turn), `rewritten_query`, `intent`, `retrieved_chunks`, `graded_chunks`, `answer`, `citations`, `prompt_tokens`, `completion_tokens`, `retry_count`, `pipeline_config` (frozen snapshot of `RagPipeline` fields), `tenant_id`, `user_id`, `allowed_collection_ids`, `error`.
+
+**3. No Postgres checkpointer.** The original section 7 specified a Postgres checkpointer per node. For the query graph this is unnecessary and adds latency: each query is stateless per-request, conversation history is managed by `ChatService` / `Message` table, and there is no resume/retry semantic (unlike ingest). The graph runs without a checkpointer. Langfuse tracing provides the debugging visibility that checkpoints would otherwise offer.
+
+**4. No `persist` node.** Section 7 shows a `persist` node at the end of the graph. This responsibility already belongs to `ChatService.complete()`, which creates `Message` rows, attaches `message_sources`, and records token counts. Duplicating persistence inside the graph would violate the principle that services own transaction boundaries. The graph returns a `CompletionResult` dataclass; `ChatService` persists it.
+
+**5. No `refine_query` node in MVP.** The section 7 topology includes a `refine_query` loop (retry < 2). For the initial implementation, this is deferred. The graph goes: `classify_intent` -> `rewrite_query` -> `retrieve` -> `grade_documents` -> `generate` -> `guardrails_output`. The `retry_count` field remains in `QueryState` to support adding the refinement loop later without a state schema change.
+
+**6. Dependency injection via configurable.** External services are injected through `config["configurable"]`:
+- `retrieval`: `RetrievalService` instance (Qdrant access)
+- `llm`: `LLMClient` instance (chat completions + embeddings)
+- `db`: `AsyncSession` (read-only queries: load embedding model from `models_registry`, load collection metadata)
+
+Nodes never instantiate these clients. `ChatService` constructs the config dict and passes it to `invoke_query_graph()`.
+
+**7. Embedding model resolution.** The query must be embedded with the same model used to index the target collection. The embedding model is derived from the first collection in `pipeline.collection_ids` by joining `collections.embedding_model_id` -> `models_registry`. All collections in a single pipeline MUST use the same embedding model (enforced at pipeline creation time by validation). The `node_retrieve` node reads the embedding model config from `config["configurable"]["db"]` and calls `config["configurable"]["llm"].embeddings()`.
+
+**8. Qdrant collection name.** Per ADR-7, the physical Qdrant collection is `emb_{embedding_model_slug}`. The slug is derived from `models_registry.model_id` (e.g., `BAAI/bge-m3` -> `bge_m3`). This is computed once in `node_retrieve` and used for the `RetrievalService.search()` call.
+
+**9. Out-of-scope / chitchat handling.** If `classify_intent` returns `out_of_scope` or `chitchat`, the graph skips `rewrite_query`, `retrieve`, `grade_documents`, and `generate`. It sets `answer` to a canned refusal message ("Nie znalazlem odpowiedzi w dostepnych dokumentach.") and routes directly to `guardrails_output`. The LLM is NOT called for generation in this path, preventing hallucination.
+
+**10. Retrieval parameters.** `top_k` defaults to 8 (per `rag-conventions.md`). `score_threshold` defaults to 0.35 for the medical domain (conservative cutoff to reduce noise). Both are overridable via `pipeline.prompt_config` JSONB fields `top_k` and `score_threshold`.
+
+**11. Guardrails node.** `node_guardrails_output` is rule-based (no LLM call in MVP). It checks `pipeline.guardrails` JSONB:
+- `add_disclaimer: true` -> appends a medical disclaimer to the answer.
+- Strips any content that looks like prompt injection leakage (document text echoing system instructions).
+- If `answer` is empty or only whitespace, replaces with the "not found" message.
+
+**12. Prompts in `src/graphs/prompts/`.** All prompt templates used by query graph nodes are stored as versioned Markdown files: `classify_intent_v1.md`, `rewrite_query_v1.md`, `grade_documents_v1.md`, `generate_v1.md`. Inline prompts in node code are forbidden. Each prompt file is loaded at graph build time. Changes require a changelog entry in the prompt file header.
+
+**13. Return contract.** `invoke_query_graph()` returns a `CompletionResult` (already defined in `src/domain/chat.py`): `answer: str`, `citations: list[MessageSourceOut]`, `prompt_tokens: int`, `completion_tokens: int`, `message_id: UUID`. `ChatService._invoke_graph()` signature becomes `async def _invoke_graph(question, pipeline, ctx) -> CompletionResult`, replacing the current `-> str` stub.
+
+**14. Conversation history.** `ChatService.complete()` loads the last N messages (default 10) from the `Message` table for the conversation and passes them to the graph as `conversation_history` in `QueryState`. The `node_rewrite_query` and `node_generate` nodes use this for multi-turn context. Message content is never logged.
+
+**Alternatives considered:**
+
+- **TypedDict for state**: Consistent with upstream LangGraph examples but loses Pydantic validation. Rejected for consistency with `IngestState` and runtime safety.
+- **Postgres checkpointer for query graph**: Adds 6 DB writes per query (one per node). Rejected because query execution is stateless per-request, and Langfuse traces provide equivalent debugging data.
+- **`persist` node inside graph**: Would duplicate `ChatService` persistence logic and violate the "services own transactions" rule. Rejected.
+- **`refine_query` loop in MVP**: Adds complexity and doubles LLM calls in the worst case. Deferred to a follow-up task; `retry_count` field in state is reserved.
+- **score_threshold = 0.0 (no cutoff)**: Too permissive for medical domain where irrelevant chunks could lead to harmful answers. 0.35 chosen as conservative default after benchmarking with BGE-M3 cosine similarity distributions.
+
+**Consequences:**
+
+- Section 7 topology diagram should be updated to remove the `persist` node and the `refine_query` loop (marked as "Phase 2").
+- `ChatService._invoke_graph()` changes from `-> str` to `-> CompletionResult`; `ChatService.complete()` must be updated to use the returned `CompletionResult` directly instead of constructing one.
+- `ChatService.complete()` must load conversation history before invoking the graph.
+- `stream_completion()` remains a wrapper over `complete()` for MVP; true streaming (LLM token-by-token via `astream`) is a Phase 2 enhancement.
+- All query graph nodes are independently testable by mocking `config["configurable"]` services.
+- Evaluation tests (`tests/eval/`) must be created with 50 standard + 20 trap questions per `rag-conventions.md`.
 
 ---
 

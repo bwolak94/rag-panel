@@ -1,8 +1,5 @@
 """ChatService — orchestrates query graph invocation.
 
-TASK-010 (LangGraph query graph) is not yet implemented.
-`_invoke_graph()` is a stub that returns a placeholder until TASK-010 is merged.
-
 Security rules:
 - Message content MUST NOT appear in any log statement.
 - Log conversation_id, message_id, pipeline_id only.
@@ -16,9 +13,11 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.schemas.chat import ChatMessage, MessageSourceOut
+from src.core.clients.llm_client import LLMClient
 from src.db.models.conversation import Conversation
 from src.db.models.message import Message
 from src.db.models.rag_pipeline import RagPipeline
@@ -32,6 +31,8 @@ _STUB_ANSWER = (
     "once the ingest and retrieval stages (TASK-006 through TASK-010) are deployed."
 )
 
+_MAX_HISTORY_MESSAGES = 10
+
 
 @dataclass
 class CompletionResult:
@@ -40,13 +41,17 @@ class CompletionResult:
     prompt_tokens: int
     completion_tokens: int
     citations: list[MessageSourceOut] = field(default_factory=list)
+    no_results: bool = False
 
 
 class ChatService:
     """Business logic for chat completions.
 
-    The `_invoke_graph()` method is a stub. Replace it with a real LangGraph
-    ainvoke call in TASK-010; the rest of the service stays unchanged.
+    Calls the LangGraph query graph via invoke_query_graph().
+    Transaction boundary: caller (router) commits; service only flushes.
+    Exception: stream_completion() calls commit() internally because StreamingResponse
+    starts after the router has already returned — the router can't commit after the
+    generator finishes.
     """
 
     async def get_or_create_conversation(
@@ -108,8 +113,30 @@ class ChatService:
         )
         db.add(user_msg)
 
-        # Stub: replaced by real graph invocation in TASK-010
-        answer = await self._invoke_graph(question, pipeline, ctx)
+        # Load conversation history (last N messages) for context
+        conversation_history = await self._load_conversation_history(
+            db=db, conversation_id=conversation.id
+        )
+
+        # Build LLM client and retrieval service
+        llm = self._build_llm_client()
+        retrieval = await self._build_retrieval_service()
+
+        # Invoke the real LangGraph query graph
+        answer, citation_dicts, no_results, prompt_tokens, completion_tokens = (
+            await self._invoke_graph(
+                question=question,
+                pipeline=pipeline,
+                ctx=ctx,
+                db=db,
+                llm=llm,
+                retrieval=retrieval,
+                conversation_history=conversation_history,
+            )
+        )
+
+        # Convert citation dicts to MessageSourceOut schemas
+        citations = self._parse_citations(citation_dicts)
 
         message_id = uuid.uuid4()
         assistant_msg = Message(
@@ -117,8 +144,8 @@ class ChatService:
             conversation_id=conversation.id,
             role="assistant",
             content=answer,
-            prompt_tokens=len(question.split()),
-            completion_tokens=len(answer.split()),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
         db.add(assistant_msg)
         await db.flush()
@@ -129,14 +156,18 @@ class ChatService:
             conversation_id=str(conversation.id),
             message_id=str(message_id),
             pipeline_id=str(pipeline.id),
+            no_results=no_results,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
         return CompletionResult(
             message_id=message_id,
             answer=answer,
-            prompt_tokens=len(question.split()),
-            completion_tokens=len(answer.split()),
-            citations=[],
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            citations=citations,
+            no_results=no_results,
         )
 
     async def stream_completion(
@@ -148,10 +179,17 @@ class ChatService:
         conversation: Conversation,
         messages: list[ChatMessage],
     ) -> AsyncGenerator[str, None]:
-        """Yield SSE-formatted chunks. Stub emits the full answer as one chunk."""
+        """Yield SSE-formatted chunks.
+
+        Note: stream_completion calls session.commit() internally because the StreamingResponse
+        starts after the router has returned — the router cannot commit after the generator ends.
+        """
         result = await self.complete(
             db=db, ctx=ctx, pipeline=pipeline, conversation=conversation, messages=messages
         )
+
+        # Commit here: the router cannot commit after StreamingResponse has started
+        await db.commit()
 
         content_chunk = {
             "id": str(result.message_id),
@@ -170,7 +208,7 @@ class ChatService:
             "id": str(result.message_id),
             "object": "chat.completion.chunk",
             "choices": [{"delta": {}, "index": 0, "finish_reason": "stop"}],
-            "message_sources": [],
+            "message_sources": [s.model_dump() for s in result.citations],
             "conversation_id": str(conversation.id),
         }
         yield f"data: {json.dumps(final_chunk)}\n\n"
@@ -184,12 +222,106 @@ class ChatService:
         return messages[-1].content
 
     @staticmethod
+    def _build_llm_client() -> LLMClient:
+        """Instantiate LLMClient with default config.
+
+        The actual model endpoint is resolved per-call inside each node
+        using the model record from DB (model_record.endpoint_url).
+        """
+        return LLMClient()
+
+    @staticmethod
+    async def _build_retrieval_service() -> object:
+        """Build a RetrievalService from settings.
+
+        Delegates to retrieval.service.get_retrieval_service() — the ONLY
+        module permitted to instantiate AsyncQdrantClient (ADR-1).
+        """
+        from src.retrieval.service import get_retrieval_service
+
+        return get_retrieval_service()
+
     async def _invoke_graph(
+        self,
+        *,
         question: str,
         pipeline: RagPipeline,
         ctx: UserContext,
-    ) -> str:
-        """Stub graph invocation. Replace with real LangGraph ainvoke in TASK-010."""
-        # Silence unused-argument warnings until TASK-010 wires these up
-        _ = question, pipeline, ctx
-        return _STUB_ANSWER
+        db: AsyncSession,
+        llm: LLMClient,
+        retrieval: object,
+        conversation_history: list[dict[str, str]],
+    ) -> tuple[str, list[dict[str, object]], bool, int, int]:
+        """Invoke the LangGraph query graph and return results.
+
+        Returns:
+            Tuple of (answer, citation_dicts, no_results, prompt_tokens, completion_tokens).
+        """
+        from src.graphs.query_graph.graph import invoke_query_graph
+        from src.retrieval.service import RetrievalService
+
+        if not isinstance(retrieval, RetrievalService):
+            raise TypeError("retrieval must be a RetrievalService instance")
+
+        return await invoke_query_graph(
+            question=question,
+            pipeline=pipeline,
+            ctx=ctx,
+            db=db,
+            llm=llm,
+            retrieval=retrieval,
+            conversation_history=conversation_history,
+        )
+
+    @staticmethod
+    async def _load_conversation_history(
+        *,
+        db: AsyncSession,
+        conversation_id: uuid.UUID,
+    ) -> list[dict[str, str]]:
+        """Load the last N messages from a conversation for context injection.
+
+        Returns list of {"role": ..., "content": ...} dicts, oldest first.
+        Content is NOT logged per GDPR rules.
+        """
+        result = await db.execute(
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.created_at.desc())
+            .limit(_MAX_HISTORY_MESSAGES)
+        )
+        messages = list(reversed(result.scalars().all()))
+        return [{"role": m.role, "content": m.content} for m in messages]
+
+    @staticmethod
+    def _parse_citations(citation_dicts: list[dict[str, object]]) -> list[MessageSourceOut]:
+        """Convert raw citation dicts from the graph to MessageSourceOut schemas.
+
+        Skips any dict that cannot be parsed (missing required fields).
+        """
+        citations: list[MessageSourceOut] = []
+        for cit in citation_dicts:
+            try:
+                raw_section = cit.get("section_heading")
+                raw_url = cit.get("source_url")
+                raw_chunk = cit.get("chunk_id")
+                raw_page = cit.get("page_number")
+                raw_highlight = cit.get("highlight_text")
+                source = MessageSourceOut(
+                    document_id=str(cit.get("document_id", "")),
+                    collection_id=str(cit.get("collection_id", "")),
+                    document_title=str(cit.get("document_title", "")),
+                    section_heading=str(raw_section) if raw_section is not None else None,
+                    source_url=str(raw_url) if raw_url is not None else None,
+                    chunk_id=str(raw_chunk) if raw_chunk is not None else None,
+                    page_number=int(str(raw_page)) if raw_page is not None else None,
+                    highlight_text=str(raw_highlight) if raw_highlight is not None else None,
+                    relevance_score=float(str(cit.get("relevance_score") or 0.0)),
+                )
+                citations.append(source)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "chat_service.citation_parse_error",
+                    keys=list(cit.keys()),
+                )
+        return citations

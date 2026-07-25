@@ -7,6 +7,7 @@ Marked as tenant_isolation so they run with the /tenant-isolation-check skill.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -56,10 +57,10 @@ def _make_doc_from_tenant_b() -> MagicMock:
     doc.language = None
     doc.uploaded_by = USER_B
     doc.validation_result = None
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    doc.created_at = datetime.now(timezone.utc)
-    doc.updated_at = datetime.now(timezone.utc)
+    doc.created_at = datetime.now(UTC)
+    doc.updated_at = datetime.now(UTC)
     return doc
 
 

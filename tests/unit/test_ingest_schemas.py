@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -20,7 +20,7 @@ _VALID_FIELDS = {
     "minio_key": "raw/abc/def/report.pdf",
     "size_bytes": "1024",
     "content_type": "application/pdf",
-    "published_at": datetime.now(timezone.utc).isoformat(),
+    "published_at": datetime.now(UTC).isoformat(),
 }
 
 
@@ -55,7 +55,7 @@ def test_dead_letter_event_instantiates() -> None:
         original_event={"key": "value"},
         failure_reason="max_retries_exceeded",
         failure_count=3,
-        last_failed_at=datetime.now(timezone.utc),
+        last_failed_at=datetime.now(UTC),
         document_id=doc_id,
         tenant_id=tenant_id,
     )

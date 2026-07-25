@@ -52,3 +52,11 @@ class IngestNodeError(RAGPlatformError):
     Caught by EventProcessor: if retriable, schedules backoff; if not, routes to DLQ.
     Must never contain document content, PII, or raw bytes in the message.
     """
+
+
+class QueryNodeError(RAGPlatformError):
+    """Raised by query graph nodes on pipeline errors.
+
+    Caught by ChatService._invoke_graph().
+    Must never contain question content, chunk text, or PII in the message.
+    """

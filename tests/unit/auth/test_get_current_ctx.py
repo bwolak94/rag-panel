@@ -229,10 +229,9 @@ class TestGetCurrentCtx:
                 "src.api.dependencies.auth.get_public_keys",
                 new_callable=AsyncMock,
                 side_effect=AuthenticationError("No JWKS keys available"),
-            ),
+            ),pytest.raises(HTTPException) as exc_info
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await get_current_ctx(credentials=make_creds(), session=make_session())
+            await get_current_ctx(credentials=make_creds(), session=make_session())
 
         assert exc_info.value.status_code == 503
 

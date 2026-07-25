@@ -17,7 +17,33 @@
 | GET | `/v1/models` | `chat:query` | lista "modeli": pipeline'y RAG (per kolekcja/tryb) + surowe LLM wg polityki roli |
 | POST | `/v1/chat/completions` | `chat:query` | czat; `stream: true` → SSE; model = id pipeline'u RAG |
 
-Rozszerzenia w odpowiedzi completions: pole `citations` (lista: `doc_id`, `title`, `page/section`, `download_url`) dołączane w ostatnim chunku SSE / w message metadata.
+Rozszerzenia w odpowiedzi completions: pole `message_sources` (lista `MessageSourceOut`) dołączane w ostatnim chunku SSE i w odpowiedzi non-streaming.
+
+### Schema `MessageSourceOut`
+
+```json
+{
+  "document_id": "uuid-string",
+  "collection_id": "uuid-string",
+  "document_title": "string",
+  "section_heading": "string | null",
+  "source_url": "string | null",
+  "chunk_id": "uuid-string | null",
+  "page_number": "int | null",
+  "highlight_text": "string | null",
+  "relevance_score": "float"
+}
+```
+
+### Query graph (TASK-010)
+
+`POST /v1/chat/completions` uruchamia LangGraph query graph:
+`classify_intent → rewrite_query → retrieve → grade_documents → generate → guardrails_output`
+
+- `intent == "topical"` → pełny retrieval; `chitchat`/`out_of_scope` → odpowiedź guardrails (po polsku).
+- `no_results == true` → odpowiedź "nie znalazłem" (bez halucynacji).
+- `guardrails.add_disclaimer == true` → disclaimer medyczny dołączany do odpowiedzi.
+- Tokeny (prompt/completion) z odpowiedzi LLM persystowane w tabeli `messages`.
 
 ## 3. Dokumenty i ingest
 
