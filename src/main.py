@@ -69,8 +69,8 @@ def create_app() -> FastAPI:
     app.include_router(tenants.router, prefix="/api/v1")
     app.include_router(documents.router)  # /api/v1/documents
     app.include_router(chat.router)  # /v1/models, /v1/chat/completions
-    app.include_router(conversations.router)  # /conversations
-    app.include_router(messages.router)  # /messages/{id}/feedback
+    app.include_router(conversations.router, prefix="/api/v1")  # /api/v1/conversations
+    app.include_router(messages.router, prefix="/api/v1")  # /api/v1/messages/{id}/feedback
     app.include_router(webhook_router)  # /internal/minio-webhook
 
     return app

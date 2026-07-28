@@ -19,6 +19,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.clients.llm_client import LLMClient
+from src.core.exceptions import TenantIsolationError
 from src.db.models.rag_pipeline import RagPipeline
 from src.domain.auth import UserContext
 from src.graphs.query_graph import nodes
@@ -80,6 +81,46 @@ def build_query_graph(checkpointer: Any = None) -> Any:
     return builder.compile(checkpointer=checkpointer)
 
 
+def _assert_pipeline_collections_authorized(
+    pipeline: RagPipeline,
+    ctx: UserContext,
+) -> None:
+    """Verify that every collection referenced by the pipeline is readable by the user.
+
+    Security invariant: pipeline.collection_ids ⊆ ctx.allowed_collection_ids.
+
+    Admin users are represented by an empty allowed_collection_ids set (no restrictions),
+    so when that set is empty we skip the check — admins can read all tenant collections.
+    If allowed_collection_ids is non-empty the pipeline must not reference any collection
+    outside that set; a violation raises TenantIsolationError (→ HTTP 403).
+
+    Args:
+        pipeline: The RagPipeline ORM object whose collection_ids are being verified.
+        ctx: Verified UserContext from JWT.
+
+    Raises:
+        TenantIsolationError: If any pipeline collection_id is not in allowed_collection_ids.
+    """
+    # Empty allowed_collection_ids signals "no restriction" (admin / superuser).
+    if not ctx.allowed_collection_ids:
+        return
+
+    pipeline_set = set(pipeline.collection_ids)
+    allowed_set = set(ctx.allowed_collection_ids)
+
+    forbidden = pipeline_set - allowed_set
+    if forbidden:
+        logger.error(
+            "pipeline_collection_authorization_violation",
+            tenant_id=str(ctx.tenant_id),
+            user_id=str(ctx.user_id),
+            pipeline_id=str(pipeline.id),
+            # Log count only — do not log UUIDs that could confirm collection existence
+            forbidden_count=len(forbidden),
+        )
+        raise TenantIsolationError("Access denied")
+
+
 async def invoke_query_graph(
     *,
     question: str,
@@ -105,8 +146,14 @@ async def invoke_query_graph(
         Tuple of (answer, citations_as_dicts, no_results, prompt_tokens, completion_tokens).
 
     Raises:
+        TenantIsolationError: If pipeline references collections the user cannot read.
         QueryNodeError: On node-level failures.
     """
+    # SECURITY: Verify pipeline.collection_ids ⊆ ctx.allowed_collection_ids before
+    # seeding the graph state.  A misconfigured pipeline must not grant access to
+    # collections the requesting user is not authorised to read.
+    _assert_pipeline_collections_authorized(pipeline, ctx)
+
     graph = build_query_graph()
 
     initial_state = QueryState(

@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from src.core.exceptions import (
     AuthenticationError,
     ConflictError,
+    ConversationNotFoundError,
     DomainValidationError,
     NotFoundError,
     PermissionDeniedError,
@@ -28,6 +29,19 @@ if TYPE_CHECKING:
 
 def register_exception_handlers(app: FastAPI) -> None:
     """Register all domain exception → HTTP response mappings."""
+
+    # ConversationNotFoundError is registered before NotFoundError so that FastAPI
+    # picks the most specific handler first (handlers are matched in registration order
+    # for exact type; subclass instances also match the parent handler, but explicit
+    # registration here makes the intent clear and produces a typed detail code).
+    @app.exception_handler(ConversationNotFoundError)
+    async def conversation_not_found_handler(
+        req: Request, exc: ConversationNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": {"code": "CONVERSATION_NOT_FOUND"}},
+        )
 
     @app.exception_handler(NotFoundError)
     async def not_found_handler(req: Request, exc: NotFoundError) -> JSONResponse:

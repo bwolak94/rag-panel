@@ -107,27 +107,21 @@ async def chat_completions(
         return await _stub_response(body)
 
     # ── Real mode ─────────────────────────────────────────────────────────────
-    try:
-        pipeline = await resolve_pipeline_by_model(body.model, ctx, session)
-    except HTTPException:
-        raise
+    # resolve_pipeline_by_model raises HTTPException(404) when the pipeline is not
+    # found within this tenant — that propagates as-is to the client.
+    pipeline = await resolve_pipeline_by_model(body.model, ctx, session)
 
     svc = _get_service()
     conversation_id = uuid.UUID(body.conversation_id) if body.conversation_id else None
 
-    try:
-        conversation = await svc.get_or_create_conversation(
-            db=session,
-            ctx=ctx,
-            pipeline_id=pipeline.id,
-            conversation_id=conversation_id,
-        )
-    except LLMUnavailableError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"error": "llm_unavailable", "message": str(exc)},
-            headers={"Retry-After": "60"},
-        ) from exc
+    # ConversationNotFoundError (domain exception) propagates to the global handler
+    # registered in exception_handlers.py → HTTP 404 {"detail": {"code": "CONVERSATION_NOT_FOUND"}}
+    conversation = await svc.get_or_create_conversation(
+        db=session,
+        ctx=ctx,
+        pipeline_id=pipeline.id,
+        conversation_id=conversation_id,
+    )
 
     if body.stream:
         return StreamingResponse(

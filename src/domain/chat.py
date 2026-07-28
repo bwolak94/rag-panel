@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.schemas.chat import ChatMessage, MessageSourceOut
 from src.core.clients.llm_client import LLMClient
+from src.core.exceptions import ConversationNotFoundError
 from src.db.models.conversation import Conversation
 from src.db.models.message import Message
 from src.db.models.rag_pipeline import RagPipeline
@@ -63,8 +64,6 @@ class ChatService:
         conversation_id: uuid.UUID | None,
     ) -> Conversation:
         if conversation_id is not None:
-            from fastapi import HTTPException, status
-
             conv = await db.get(Conversation, conversation_id)
             if (
                 conv is None
@@ -72,10 +71,7 @@ class ChatService:
                 or conv.user_id != ctx.user_id
                 or conv.is_deleted
             ):
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail={"code": "CONVERSATION_NOT_FOUND"},
-                )
+                raise ConversationNotFoundError("CONVERSATION_NOT_FOUND")
             return conv
 
         conv = Conversation(
