@@ -14,6 +14,7 @@ from src.api.schemas.model import ModelCreate, ModelListResponse, ModelResponse,
 from src.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError
 from src.db.models.models_registry import ModelsRegistry
 from src.db.repositories.model_repository import ModelRepository
+from src.db.repositories.pipeline_repository import PipelineRepository
 from src.domain.audit_service import AuditService
 from src.domain.auth import UserContext
 
@@ -23,6 +24,7 @@ class ModelService:
 
     def __init__(self, session: AsyncSession) -> None:
         self._repo = ModelRepository(session)
+        self._pipeline_repo = PipelineRepository(session)
         self._audit = AuditService(session)
 
     async def list_models(
@@ -94,12 +96,7 @@ class ModelService:
             action="model.created",
             resource_type="model",
             resource_id=model.id,
-            details={
-                "name": model.name,
-                "type": model.type,
-                "provider": model.provider,
-                "model_id": model.model_id,
-            },
+            details={"type": model.type, "provider": model.provider},
             ip=ip,
         )
 
@@ -121,12 +118,9 @@ class ModelService:
         Raises:
             NotFoundError: If the model does not exist or is not visible to this tenant.
         """
-        model = await self._repo.get_by_id(model_id)
+        model = await self._repo.get_visible_by_id(model_id, ctx.tenant_id)
         if model is None:
-            raise NotFoundError(f"Model {model_id} not found")
-        if model.tenant_id is not None and model.tenant_id != ctx.tenant_id:
-            # Treat as not-found to avoid leaking existence of cross-tenant resources
-            raise NotFoundError(f"Model {model_id} not found")
+            raise NotFoundError("Model not found")
         return ModelResponse.model_validate(model)
 
     async def update_model(
@@ -155,22 +149,19 @@ class ModelService:
             PermissionDeniedError: If the model is system-wide (tenant_id=None).
             ConflictError: If trying to deactivate a model with active pipelines.
         """
-        model = await self._repo.get_by_id(model_id)
+        model = await self._repo.get_visible_by_id(model_id, ctx.tenant_id)
         if model is None:
-            raise NotFoundError(f"Model {model_id} not found")
+            raise NotFoundError("Model not found")
         if model.tenant_id is None:
             raise PermissionDeniedError("System-wide models cannot be modified through this API")
         if model.tenant_id != ctx.tenant_id:
-            raise NotFoundError(f"Model {model_id} not found")
+            raise NotFoundError("Model not found")
 
         # Guard: cannot deactivate if active pipelines reference this model
         if body.is_active is False:
-            pipeline_count = await self._repo.count_referencing_pipelines(model_id)
+            pipeline_count = await self._pipeline_repo.count_referencing_model(model_id)
             if pipeline_count > 0:
-                raise ConflictError(
-                    f"Cannot deactivate model {model_id}: "
-                    f"{pipeline_count} active pipeline(s) reference it"
-                )
+                raise ConflictError("Cannot deactivate model: active pipelines reference it")
 
         if body.name is not None:
             model.name = body.name
@@ -212,20 +203,17 @@ class ModelService:
             PermissionDeniedError: If the model is system-wide.
             ConflictError: If active pipelines reference this model.
         """
-        model = await self._repo.get_by_id(model_id)
+        model = await self._repo.get_visible_by_id(model_id, ctx.tenant_id)
         if model is None:
-            raise NotFoundError(f"Model {model_id} not found")
+            raise NotFoundError("Model not found")
         if model.tenant_id is None:
             raise PermissionDeniedError("System-wide models cannot be deactivated through this API")
         if model.tenant_id != ctx.tenant_id:
-            raise NotFoundError(f"Model {model_id} not found")
+            raise NotFoundError("Model not found")
 
-        pipeline_count = await self._repo.count_referencing_pipelines(model_id)
+        pipeline_count = await self._pipeline_repo.count_referencing_model(model_id)
         if pipeline_count > 0:
-            raise ConflictError(
-                f"Cannot deactivate model {model_id}: "
-                f"{pipeline_count} active pipeline(s) reference it"
-            )
+            raise ConflictError("Cannot deactivate model: active pipelines reference it")
 
         model.is_active = False
 

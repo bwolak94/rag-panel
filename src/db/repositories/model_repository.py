@@ -27,6 +27,27 @@ class ModelRepository:
         """
         return await self._session.get(ModelsRegistry, model_id)
 
+    async def get_visible_by_id(
+        self, model_id: uuid.UUID, tenant_id: uuid.UUID
+    ) -> ModelsRegistry | None:
+        """Fetch a model visible to the tenant: system-wide (tenant_id IS NULL) OR tenant-owned.
+
+        Use this for all service-layer lookups that act on behalf of a specific tenant.
+        The unscoped get_by_id() remains for internal system use only.
+
+        Args:
+            model_id: The model UUID to retrieve.
+            tenant_id: The tenant UUID from JWT context.
+
+        Returns:
+            The matching ModelsRegistry or None if not visible to this tenant.
+        """
+        q = select(ModelsRegistry).where(
+            ModelsRegistry.id == model_id,
+            or_(ModelsRegistry.tenant_id.is_(None), ModelsRegistry.tenant_id == tenant_id),
+        )
+        return (await self._session.execute(q)).scalar_one_or_none()
+
     async def get_active_embedding_model(self, model_id: uuid.UUID) -> ModelsRegistry | None:
         """Return the model only if it is type='embedding' and is_active=True.
 
@@ -86,21 +107,3 @@ class ModelRepository:
         await self._session.flush()
         return model
 
-    async def count_referencing_pipelines(self, model_id: uuid.UUID) -> int:
-        """Count active pipelines referencing the given model.
-
-        Used before deactivating a model to guard against breaking active pipelines.
-
-        Args:
-            model_id: The model UUID to check.
-
-        Returns:
-            The number of active pipelines referencing this model.
-        """
-        from src.db.models.rag_pipeline import RagPipeline
-
-        q = select(func.count()).where(
-            RagPipeline.llm_model_id == model_id,
-            RagPipeline.is_active.is_(True),
-        )
-        return (await self._session.execute(q)).scalar_one()

@@ -7,8 +7,8 @@ tenant_id is ALWAYS sourced from JWT context — never from body or query params
 
 from __future__ import annotations
 
-import uuid
 from typing import Annotated
+from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -92,21 +92,13 @@ async def list_models(
     summary="Get a single model by ID",
 )
 async def get_model(
-    model_id: str,
+    model_id: UUID,
     ctx: Annotated[UserContext, Depends(get_current_ctx)],
     _: Annotated[None, Depends(_require_read)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ModelResponse:
     """Return a model if it is system-wide or owned by the requesting tenant."""
-    try:
-        mid = uuid.UUID(model_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid model_id format",
-        ) from exc
-
-    return await _get_service(session).get_model(mid, ctx)
+    return await _get_service(session).get_model(model_id, ctx)
 
 
 @router.patch(
@@ -115,7 +107,7 @@ async def get_model(
     summary="Update a tenant-owned model",
 )
 async def update_model(
-    model_id: str,
+    model_id: UUID,
     body: ModelUpdate,
     request: Request,
     ctx: Annotated[UserContext, Depends(get_current_ctx)],
@@ -126,16 +118,8 @@ async def update_model(
 
     System-wide models (tenant_id=None) cannot be updated through this endpoint.
     """
-    try:
-        mid = uuid.UUID(model_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid model_id format",
-        ) from exc
-
     ip = request.client.host if request.client else None
-    result = await _get_service(session).update_model(mid, body, ctx, ip)
+    result = await _get_service(session).update_model(model_id, body, ctx, ip)
     await session.commit()
     return result
 
@@ -146,7 +130,7 @@ async def update_model(
     summary="Deactivate a tenant-owned model (soft-delete)",
 )
 async def deactivate_model(
-    model_id: str,
+    model_id: UUID,
     request: Request,
     ctx: Annotated[UserContext, Depends(get_current_ctx)],
     _: Annotated[None, Depends(_require_admin)],
@@ -157,14 +141,6 @@ async def deactivate_model(
     Returns 409 if the model is referenced by active pipelines.
     Returns 403 if the model is system-wide.
     """
-    try:
-        mid = uuid.UUID(model_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid model_id format",
-        ) from exc
-
     ip = request.client.host if request.client else None
-    await _get_service(session).deactivate_model(mid, ctx, ip)
+    await _get_service(session).deactivate_model(model_id, ctx, ip)
     await session.commit()

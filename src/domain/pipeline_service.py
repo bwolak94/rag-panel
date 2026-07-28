@@ -18,6 +18,7 @@ from src.api.schemas.pipeline import (
 )
 from src.core.exceptions import DomainValidationError, NotFoundError
 from src.db.models.rag_pipeline import RagPipeline
+from src.db.repositories.collection_repository import CollectionRepository
 from src.db.repositories.model_repository import ModelRepository
 from src.db.repositories.pipeline_repository import PipelineRepository
 from src.domain.audit_service import AuditService
@@ -30,6 +31,7 @@ class PipelineService:
     def __init__(self, session: AsyncSession) -> None:
         self._repo = PipelineRepository(session)
         self._model_repo = ModelRepository(session)
+        self._collection_repo = CollectionRepository(session)
         self._audit = AuditService(session)
 
     async def list_pipelines(
@@ -88,6 +90,7 @@ class PipelineService:
             DomainValidationError: If llm_model_id is invalid or not accessible.
         """
         await self._validate_llm_model(body.llm_model_id, ctx)
+        await self._validate_collection_ids(body.collection_ids, ctx)
 
         pipeline = RagPipeline(
             tenant_id=ctx.tenant_id,
@@ -104,11 +107,7 @@ class PipelineService:
             action="pipeline.created",
             resource_type="pipeline",
             resource_id=pipeline.id,
-            details={
-                "name": pipeline.name,
-                "llm_model_id": str(body.llm_model_id),
-                "collection_count": len(body.collection_ids),
-            },
+            details={"collection_count": len(body.collection_ids)},
             ip=ip,
         )
 
@@ -165,6 +164,8 @@ class PipelineService:
 
         if body.llm_model_id is not None:
             await self._validate_llm_model(body.llm_model_id, ctx)
+        if body.collection_ids is not None:
+            await self._validate_collection_ids(body.collection_ids, ctx)
 
         if body.name is not None:
             pipeline.name = body.name
@@ -207,16 +208,38 @@ class PipelineService:
         if pipeline is None:
             raise NotFoundError(f"Pipeline {pipeline_id} not found")
 
+        await self._repo.delete(pipeline)
+
         await self._audit.log(
             ctx=ctx,
             action="pipeline.deleted",
             resource_type="pipeline",
             resource_id=pipeline_id,
-            details={"name": pipeline.name},
+            details={},
             ip=ip,
         )
 
-        await self._repo.delete(pipeline)
+    async def _validate_collection_ids(
+        self, collection_ids: list[uuid.UUID], ctx: UserContext
+    ) -> None:
+        """Verify that all collection IDs belong to the requesting tenant.
+
+        Security invariant: a pipeline must only reference collections owned by ctx.tenant_id.
+        This prevents cross-tenant retrieval at query-graph execution time.
+
+        Args:
+            collection_ids: The list of collection UUIDs to validate.
+            ctx: Authenticated user context from JWT.
+
+        Raises:
+            DomainValidationError: If any collection is not found for this tenant.
+        """
+        for cid in collection_ids:
+            row = await self._collection_repo.get_by_id(cid, ctx.tenant_id)
+            if row is None:
+                raise DomainValidationError(
+                    "One or more collection IDs are not accessible for this tenant"
+                )
 
     async def _validate_llm_model(
         self, model_id: uuid.UUID, ctx: UserContext
@@ -231,19 +254,16 @@ class PipelineService:
             DomainValidationError: If the model is not found, not of type 'llm',
                 not active, or not visible to the tenant.
         """
-        model = await self._model_repo.get_by_id(model_id)
+        model = await self._model_repo.get_visible_by_id(model_id, ctx.tenant_id)
         if model is None:
             raise DomainValidationError(
-                f"LLM model {model_id} not found or not accessible"
-            )
-        # Visibility: system-wide (tenant_id=None) OR same tenant
-        if model.tenant_id is not None and model.tenant_id != ctx.tenant_id:
-            raise DomainValidationError(
-                f"LLM model {model_id} not found or not accessible"
+                "The referenced LLM model is not available for this tenant"
             )
         if model.type != "llm":
             raise DomainValidationError(
-                f"Model {model_id} is of type '{model.type}', expected 'llm'"
+                "The referenced LLM model is not available for this tenant"
             )
         if not model.is_active:
-            raise DomainValidationError(f"LLM model {model_id} is not active")
+            raise DomainValidationError(
+                "The referenced LLM model is not available for this tenant"
+            )

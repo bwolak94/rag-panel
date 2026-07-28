@@ -7,8 +7,8 @@ tenant_id is ALWAYS sourced from JWT context — never from body or query params
 
 from __future__ import annotations
 
-import uuid
 from typing import Annotated
+from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -97,21 +97,13 @@ async def list_pipelines(
     summary="Get a single RAG pipeline by ID",
 )
 async def get_pipeline(
-    pipeline_id: str,
+    pipeline_id: UUID,
     ctx: Annotated[UserContext, Depends(get_current_ctx)],
     _: Annotated[None, Depends(_require_read)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> PipelineResponse:
     """Return a pipeline owned by the requesting tenant."""
-    try:
-        pid = uuid.UUID(pipeline_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid pipeline_id format",
-        ) from exc
-
-    return await _get_service(session).get_pipeline(pid, ctx)
+    return await _get_service(session).get_pipeline(pipeline_id, ctx)
 
 
 @router.patch(
@@ -120,7 +112,7 @@ async def get_pipeline(
     summary="Update a RAG pipeline",
 )
 async def update_pipeline(
-    pipeline_id: str,
+    pipeline_id: UUID,
     body: PipelineUpdate,
     request: Request,
     ctx: Annotated[UserContext, Depends(get_current_ctx)],
@@ -128,16 +120,8 @@ async def update_pipeline(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> PipelineResponse:
     """Partially update a pipeline owned by the requesting tenant."""
-    try:
-        pid = uuid.UUID(pipeline_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid pipeline_id format",
-        ) from exc
-
     ip = request.client.host if request.client else None
-    result = await _get_service(session).update_pipeline(pid, body, ctx, ip)
+    result = await _get_service(session).update_pipeline(pipeline_id, body, ctx, ip)
     await session.commit()
     return result
 
@@ -148,21 +132,13 @@ async def update_pipeline(
     summary="Delete a RAG pipeline (hard delete)",
 )
 async def delete_pipeline(
-    pipeline_id: str,
+    pipeline_id: UUID,
     request: Request,
     ctx: Annotated[UserContext, Depends(get_current_ctx)],
     _: Annotated[None, Depends(_require_admin)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> None:
     """Hard-delete a pipeline owned by the requesting tenant."""
-    try:
-        pid = uuid.UUID(pipeline_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid pipeline_id format",
-        ) from exc
-
     ip = request.client.host if request.client else None
-    await _get_service(session).delete_pipeline(pid, ctx, ip)
+    await _get_service(session).delete_pipeline(pipeline_id, ctx, ip)
     await session.commit()
