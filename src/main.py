@@ -1,5 +1,6 @@
 """FastAPI application factory."""
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -43,7 +44,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Graceful shutdown
     logger.info("shutdown")
-    shutdown_langfuse()
+    # shutdown_langfuse() calls blocking flush()/shutdown() — offload to thread pool
+    # so the async event loop is not stalled during Langfuse HTTP flush.
+    await asyncio.to_thread(shutdown_langfuse)
     await engine.dispose()
     await app.state.qdrant_client.close()
 

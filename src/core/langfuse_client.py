@@ -19,6 +19,22 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _mask_pii(data: Any) -> Any:
+    """Langfuse mask callback — strips all input/output content as a defence-in-depth layer.
+
+    security.md requires "Langfuse with masking enabled". Even though capture_input=False
+    and capture_output=False are set on every @observe decorator, this mask provides a
+    second layer: if any content accidentally reaches the SDK, it is replaced with a
+    sentinel before export to the Langfuse server.
+    """
+    # Replace any string value with a sentinel. Dicts and other structures are left as-is
+    # so that safe operational metadata (counts, booleans, UUIDs) passes through unchanged.
+    if isinstance(data, str):
+        return "[MASKED]"
+    return data
+
+
 # Module-level singleton — None until initialize_langfuse() is called.
 # Typed as Any because Langfuse is imported lazily (not available without config).
 _langfuse_instance: Any = None
@@ -48,6 +64,7 @@ def initialize_langfuse() -> None:
             public_key=settings.LANGFUSE_PUBLIC_KEY,
             secret_key=settings.LANGFUSE_SECRET_KEY,
             host=settings.LANGFUSE_HOST,
+            mask=_mask_pii,  # security.md: "Langfuse with masking enabled" — defence in depth
         )
         logger.info("langfuse_initialized", extra={"host": settings.LANGFUSE_HOST})
     except Exception as exc:  # pragma: no cover — belt-and-suspenders
