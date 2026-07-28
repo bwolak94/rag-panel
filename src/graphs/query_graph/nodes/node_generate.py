@@ -16,8 +16,10 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from langfuse import observe
 
 from src.core.exceptions import QueryNodeError
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.graphs.query_graph.state import QueryState
 
 logger = structlog.get_logger(__name__)
@@ -79,6 +81,7 @@ def _map_citation_to_source(
     }
 
 
+@observe(as_type="generation", capture_input=False, capture_output=False)
 async def node_generate(state: QueryState, config: dict[str, Any]) -> dict[str, Any]:
     """Generate the final RAG answer with citations.
 
@@ -102,9 +105,7 @@ async def node_generate(state: QueryState, config: dict[str, Any]) -> dict[str, 
 
     from src.db.models.models_registry import ModelsRegistry
 
-    result = await db.execute(
-        select(ModelsRegistry).where(ModelsRegistry.id == state.llm_model_id)
-    )
+    result = await db.execute(select(ModelsRegistry).where(ModelsRegistry.id == state.llm_model_id))
     model_record = result.scalar_one_or_none()
     if model_record is None:
         raise QueryNodeError(f"LLM model not found: llm_model_id={state.llm_model_id}")
@@ -155,6 +156,14 @@ async def node_generate(state: QueryState, config: dict[str, Any]) -> dict[str, 
             citations.append(mapped)
 
     elapsed_ms = int((datetime.now(UTC) - node_start).total_seconds() * 1000)
+    _lf_update_span(
+        metadata={
+            "tenant_id": str(state.tenant_id),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "citation_count": len(citations),
+        }
+    )
     logger.info(
         "node_generate.completed",
         tenant_id=str(state.tenant_id),

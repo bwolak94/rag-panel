@@ -12,6 +12,7 @@ from src.api.exception_handlers import register_exception_handlers
 from src.api.routers import chat, collections, conversations, documents, health, messages, tenants
 from src.api.routers.webhooks import webhook_router
 from src.core.config import settings
+from src.core.langfuse_client import initialize_langfuse, shutdown_langfuse
 from src.core.logging import configure_logging
 
 logger = structlog.get_logger(__name__)
@@ -21,6 +22,9 @@ logger = structlog.get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup and shutdown lifecycle management."""
     logger.info("startup", version=settings.APP_VERSION, environment=settings.ENVIRONMENT)
+
+    # Initialize Langfuse tracing (no-op when keys are absent)
+    initialize_langfuse()
 
     # Warm up Postgres connection pool
     from src.core.database import engine
@@ -39,6 +43,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Graceful shutdown
     logger.info("shutdown")
+    shutdown_langfuse()
     await engine.dispose()
     await app.state.qdrant_client.close()
 

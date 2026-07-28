@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from langfuse import observe
 
 from src.core.exceptions import QueryNodeError
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.graphs.query_graph.state import QueryState
 
 logger = structlog.get_logger(__name__)
@@ -38,6 +40,7 @@ def _format_history(history: list[dict[str, str]]) -> str:
     return "\n".join(f"{entry['role']}: {entry['content']}" for entry in history)
 
 
+@observe(capture_input=False, capture_output=False)
 async def node_rewrite_query(state: QueryState, config: dict[str, Any]) -> dict[str, Any]:
     """Rewrite query for better embedding retrieval.
 
@@ -59,9 +62,7 @@ async def node_rewrite_query(state: QueryState, config: dict[str, Any]) -> dict[
 
     from src.db.models.models_registry import ModelsRegistry
 
-    result = await db.execute(
-        select(ModelsRegistry).where(ModelsRegistry.id == state.llm_model_id)
-    )
+    result = await db.execute(select(ModelsRegistry).where(ModelsRegistry.id == state.llm_model_id))
     model_record = result.scalar_one_or_none()
     if model_record is None:
         raise QueryNodeError(f"LLM model not found: llm_model_id={state.llm_model_id}")
@@ -105,6 +106,11 @@ async def node_rewrite_query(state: QueryState, config: dict[str, Any]) -> dict[
         # Fallback to original question rather than failing the whole pipeline
         rewritten_query = state.question
 
+    _lf_update_span(
+        metadata={
+            "tenant_id": str(state.tenant_id),
+        }
+    )
     logger.info(
         "node_rewrite_query.completed",
         tenant_id=str(state.tenant_id),

@@ -939,6 +939,81 @@ Nodes never instantiate these clients. `ChatService` constructs the config dict 
 
 ---
 
+### ADR-10: Langfuse Tracing -- observe decorator with PII masking (GDPR)
+
+**Status:** Accepted
+**Date:** 2026-07-28
+
+**Context:**
+The architecture (section 14, section 17) specifies Langfuse for LLM observability with PII masking. Langfuse 4.14.0 is installed (locked in `uv.lock`). Settings already declare `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_HOST` as optional env vars in `src/core/config.py`. However, no implementation decision exists for how tracing is integrated into the query graph or how GDPR compliance is enforced at the code level.
+
+The platform handles medical data. GDPR and internal security rules (`security.md`, `rag-conventions.md`) mandate that prompt content, document text, chunk content, and user responses must never appear in application logs or external observability systems. Langfuse runs self-hosted on-prem, but defense-in-depth requires that PII is not sent to it in the first place.
+
+The query graph has 6 nodes (`classify_intent`, `rewrite_query`, `retrieve`, `grade_documents`, `generate`, `guardrails_output`) orchestrated by `invoke_query_graph()`. Each node receives and returns a `QueryState` Pydantic model containing the user question, retrieved chunks, generated answer, and conversation history -- all of which are PII or content that must not be recorded.
+
+**Decision:**
+
+**1. Decorator-based instrumentation with input/output capture disabled.** Each query graph node function and the root `invoke_query_graph()` function are decorated with Langfuse v4's `@observe` decorator:
+
+```python
+from langfuse.decorators import observe, langfuse_context
+
+@observe(name="invoke_query_graph", capture_input=False, capture_output=False)
+async def invoke_query_graph(...) -> CompletionResult:
+    langfuse_context.update_current_trace(
+        user_id=str(user_id),
+        session_id=str(conversation_id),
+        metadata={"tenant_id": str(tenant_id), "pipeline_id": str(pipeline_id)},
+    )
+    ...
+
+@observe(name="classify_intent", capture_input=False, capture_output=False)
+async def node_classify_intent(state: QueryState, config: RunnableConfig) -> dict:
+    langfuse_context.update_current_observation(
+        metadata={"intent": state.intent, "model": model_name},
+    )
+    ...
+```
+
+Setting `capture_input=False, capture_output=False` prevents Langfuse from automatically serializing function arguments (which contain `QueryState` with question, chunks, answer) and return values. This is the primary GDPR safeguard.
+
+**2. Explicit GDPR-safe metadata only.** After disabling automatic capture, each node calls `langfuse_context.update_current_observation()` to record only safe metadata: identifiers (`tenant_id`, `user_id`, `conversation_id`, `pipeline_id`, `collection_ids`), counts (`chunk_count`, `graded_relevant_count`, `prompt_tokens`, `completion_tokens`), scores (`score_threshold`, `top_k`), model names, booleans (`pii_found`, `disclaimer_added`), and latency. Document text, chunk text, prompt content, questions, and answers are never included.
+
+**3. Token usage reporting.** Nodes that call the LLM (`classify_intent`, `rewrite_query`, `grade_documents`, `generate`) report token counts via `langfuse_context.update_current_observation(usage={"input": prompt_tokens, "output": completion_tokens})`. This enables per-tenant cost tracking in Langfuse dashboards without exposing the actual prompt or completion text.
+
+**4. Langfuse is optional -- noop when unconfigured.** If `LANGFUSE_PUBLIC_KEY` is not set (or is `None`), the `@observe` decorator becomes a transparent passthrough that adds no overhead. Langfuse v4 handles this natively: when the SDK is not initialized with valid credentials, decorators are noops. No conditional logic or wrapper is needed in node code.
+
+**5. Initialization and shutdown module.** A new module `src/core/langfuse_client.py` provides three functions:
+- `initialize_langfuse(settings: Settings) -> None` -- called during FastAPI lifespan startup. Configures the Langfuse SDK via environment variables (already present in `Settings`). If `LANGFUSE_PUBLIC_KEY` is `None`, logs a warning and returns without initializing (decorators remain noops).
+- `shutdown_langfuse() -> None` -- called during FastAPI lifespan shutdown. Calls `langfuse_context.flush()` to ensure all buffered traces are sent before process exit.
+- `get_langfuse() -> Langfuse | None` -- returns the initialized Langfuse client instance, or `None` if tracing is disabled. Used only by code that needs to create manual traces outside the decorator pattern (e.g., ingest worker in the future).
+
+**6. Trace hierarchy matches section 17.** The root trace is created by `invoke_query_graph()` with `name="query_graph"`. Each node creates a child span (automatic via `@observe` nesting). The resulting hierarchy matches the specification in section 17 of this document, minus the `persist` and `refine_query` spans (removed per ADR-9 decisions 4 and 5). The `persist` span is not needed because persistence is handled by `ChatService` outside the graph.
+
+**7. Ingest graph tracing deferred.** This ADR covers the query graph only. Ingest graph tracing will follow the same pattern (`@observe` with `capture_input=False, capture_output=False`) and will be added when the ingest graph implementation is complete. The span structure for ingest is already defined in section 17.
+
+**Alternatives considered:**
+
+- **LangChain callback handler (`CallbackHandler`)**: Langfuse provides a LangChain-specific callback handler that auto-instruments LLM calls. Rejected because (a) it captures prompt and completion text by default, requiring complex post-hoc masking; (b) our nodes call the LLM via an OpenAI-compatible client, not LangChain chains, so the callback handler would miss most calls; (c) the `@observe` decorator is more explicit and gives per-node control over what is recorded.
+
+- **Manual `langfuse.trace()` / `langfuse.span()` API**: Creating traces and spans via the imperative API instead of decorators. Rejected because it requires explicit context passing between nodes (parent span ID), adds boilerplate, and is more error-prone (forgetting to end a span). The decorator approach handles nesting automatically via Python context variables.
+
+- **`capture_input=True` with Langfuse server-side masking**: Sending full inputs to the self-hosted Langfuse instance and relying on Langfuse's server-side PII masking feature. Rejected because (a) defense-in-depth: PII should never leave the application process unnecessarily; (b) server-side masking is regex-based and may miss medical terminology or patient identifiers; (c) it violates the project's security rule that prompt content must not appear in observability systems.
+
+- **OpenTelemetry (OTEL) with Jaeger/Tempo**: Using the OTEL standard instead of Langfuse-specific instrumentation. Rejected because (a) OTEL does not provide LLM-specific features (token counting, prompt versioning, cost tracking, evaluation scores); (b) Langfuse is already in the architecture and deployed; (c) Langfuse supports OTEL export if we need to bridge to a generic tracing backend later.
+
+**Consequences:**
+
+- `src/core/langfuse_client.py` must be created with `initialize_langfuse()`, `shutdown_langfuse()`, and `get_langfuse()`.
+- `src/main.py` lifespan must call `initialize_langfuse(settings)` at startup and `shutdown_langfuse()` at shutdown.
+- `src/graphs/query_graph/graph.py` (`invoke_query_graph`) and all 6 node files must add `@observe(capture_input=False, capture_output=False)` decorators with GDPR-safe metadata updates.
+- Unit tests for query graph nodes must continue to work without Langfuse configured (decorators are noops when SDK is not initialized).
+- Section 17 Langfuse tracing span hierarchy should be updated to remove `persist` and `refine_query` spans (consistency with ADR-9).
+- The `pyproject.toml` dependency specifier should be tightened from `>=2.0` to `>=4.0` to match the actual API surface used (`langfuse.decorators`, `langfuse_context`).
+- Future ingest graph tracing will follow the same pattern established here.
+
+---
+
 ## 13. Security Architecture Summary
 
 Full details in [Security & GDPR document](rodo.md). Key architectural security controls:

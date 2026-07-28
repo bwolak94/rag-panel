@@ -16,10 +16,12 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+from langfuse import observe
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.clients.llm_client import LLMClient
 from src.core.exceptions import TenantIsolationError
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.db.models.rag_pipeline import RagPipeline
 from src.domain.auth import UserContext
 from src.graphs.query_graph import nodes
@@ -121,6 +123,7 @@ def _assert_pipeline_collections_authorized(
         raise TenantIsolationError("Access denied")
 
 
+@observe(capture_input=False, capture_output=False)
 async def invoke_query_graph(
     *,
     question: str,
@@ -155,6 +158,13 @@ async def invoke_query_graph(
     _assert_pipeline_collections_authorized(pipeline, ctx)
 
     graph = build_query_graph()
+
+    _lf_update_span(
+        {
+            "tenant_id": str(ctx.tenant_id),
+            "pipeline_id": str(pipeline.id),
+        }
+    )
 
     initial_state = QueryState(
         question=question,
@@ -192,6 +202,14 @@ async def invoke_query_graph(
     no_results: bool = final_state.get("no_results") or False
     prompt_tokens: int = final_state.get("prompt_tokens") or 0
     completion_tokens: int = final_state.get("completion_tokens") or 0
+
+    _lf_update_span(
+        {
+            "no_results": no_results,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+        }
+    )
 
     logger.info(
         "query_graph_completed",
