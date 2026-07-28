@@ -28,7 +28,7 @@ def test_settings_fail_without_secret_key(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("EMBEDDING_BASE_URL", "http://localhost:11434/v1")
 
     with pytest.raises(ValidationError, match="SECRET_KEY"):
-        Settings()
+        Settings(_env_file=None)  # type: ignore[call-arg]
 
 
 def test_settings_fail_without_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -47,7 +47,7 @@ def test_settings_fail_without_database_url(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("EMBEDDING_BASE_URL", "http://localhost:11434/v1")
 
     with pytest.raises(ValidationError, match="DATABASE_URL"):
-        Settings()
+        Settings(_env_file=None)  # type: ignore[call-arg]
 
 
 def test_presigned_ttl_above_300_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -96,13 +96,29 @@ def test_presigned_ttl_at_300_is_valid(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.INGEST_PRESIGNED_URL_TTL_SECONDS == 300
 
 
-def test_default_values() -> None:
-    """Verify defaults don't change accidentally."""
-    from src.core.config import settings
+def test_default_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify class defaults don't change accidentally (ignores .env overrides)."""
+    from src.core.config import Settings
 
-    assert settings.DB_POOL_SIZE == 10
-    assert settings.DB_MAX_OVERFLOW == 20
-    assert settings.DB_ECHO_SQL is False
-    assert settings.RETRIEVAL_TOP_K == 8
-    assert settings.RETRIEVAL_RELEVANCE_THRESHOLD == 0.5
-    assert settings.INGEST_NODE_MAX_RETRIES == 3
+    monkeypatch.setenv("SECRET_KEY", "test-key-32-chars-minimum-pad!!!")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("MINIO_ENDPOINT", "localhost:9000")
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "key")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "secret")
+    monkeypatch.setenv("QDRANT_URL", "http://localhost:6333")
+    monkeypatch.setenv("KEYCLOAK_BASE_URL", "http://localhost:8080")
+    monkeypatch.setenv("KEYCLOAK_REALM", "test")
+    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "test")
+    monkeypatch.setenv("KEYCLOAK_AUDIENCE", "test")
+    monkeypatch.setenv("LLM_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("MINIO_WEBHOOK_SECRET", "webhook-secret")
+
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert s.DB_POOL_SIZE == 10
+    assert s.DB_MAX_OVERFLOW == 20
+    assert s.DB_ECHO_SQL is False
+    assert s.RETRIEVAL_TOP_K == 8
+    assert s.RETRIEVAL_RELEVANCE_THRESHOLD == 0.5
+    assert s.INGEST_NODE_MAX_RETRIES == 3

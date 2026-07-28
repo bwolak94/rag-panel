@@ -42,14 +42,14 @@ def build_query_graph(checkpointer: Any = None) -> Any:
     """
     from langgraph.graph import END, StateGraph
 
-    builder: StateGraph = StateGraph(QueryState)
+    builder: StateGraph = StateGraph(QueryState)  # type: ignore[type-arg]
 
-    builder.add_node("node_classify_intent", nodes.node_classify_intent)
-    builder.add_node("node_rewrite_query", nodes.node_rewrite_query)
-    builder.add_node("node_retrieve", nodes.node_retrieve)
-    builder.add_node("node_grade_documents", nodes.node_grade_documents)
-    builder.add_node("node_generate", nodes.node_generate)
-    builder.add_node("node_guardrails_output", nodes.node_guardrails_output)
+    builder.add_node("node_classify_intent", nodes.node_classify_intent)  # type: ignore[call-overload]
+    builder.add_node("node_rewrite_query", nodes.node_rewrite_query)  # type: ignore[call-overload]
+    builder.add_node("node_retrieve", nodes.node_retrieve)  # type: ignore[call-overload]
+    builder.add_node("node_grade_documents", nodes.node_grade_documents)  # type: ignore[call-overload]
+    builder.add_node("node_generate", nodes.node_generate)  # type: ignore[call-overload]
+    builder.add_node("node_guardrails_output", nodes.node_guardrails_output)  # type: ignore[call-overload]
 
     builder.set_entry_point("node_classify_intent")
 

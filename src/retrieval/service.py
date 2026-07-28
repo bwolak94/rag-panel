@@ -349,7 +349,7 @@ class RetrievalService:
         )
 
 
-def get_retrieval_service(timeout: int = 10) -> "RetrievalService":
+def get_retrieval_service(timeout: int = 10) -> RetrievalService:
     """Factory: create a RetrievalService from application settings.
 
     This is the ONLY place outside RetrievalService itself that may instantiate

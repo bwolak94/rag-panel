@@ -63,7 +63,7 @@ async def node_fetch(state: IngestState, config: dict[str, Any]) -> dict[str, An
         def _get_object() -> bytes:
             resp = minio.get_object(bucket, document.minio_key)
             try:
-                return resp.read()
+                return bytes(resp.read())
             finally:
                 resp.close()
                 resp.release_conn()
