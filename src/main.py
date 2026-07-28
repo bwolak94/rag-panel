@@ -10,7 +10,17 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from qdrant_client import AsyncQdrantClient
 
 from src.api.exception_handlers import register_exception_handlers
-from src.api.routers import chat, collections, conversations, documents, health, messages, tenants
+from src.api.routers import (
+    chat,
+    collections,
+    conversations,
+    documents,
+    health,
+    messages,
+    models,
+    pipelines,
+    tenants,
+)
 from src.api.routers.webhooks import webhook_router
 from src.core.config import settings
 from src.core.langfuse_client import initialize_langfuse, shutdown_langfuse
@@ -79,6 +89,8 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)  # /v1/models, /v1/chat/completions
     app.include_router(conversations.router, prefix="/api/v1")  # /api/v1/conversations
     app.include_router(messages.router, prefix="/api/v1")  # /api/v1/messages/{id}/feedback
+    app.include_router(models.router, prefix="/api/v1")   # /api/v1/models
+    app.include_router(pipelines.router, prefix="/api/v1")  # /api/v1/pipelines
     app.include_router(webhook_router)  # /internal/minio-webhook
 
     return app
