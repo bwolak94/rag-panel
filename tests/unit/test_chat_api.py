@@ -166,3 +166,103 @@ async def test_chat_no_chat_query_permission_returns_403() -> None:
         )
 
     assert resp.status_code == 403
+
+
+# ── Domain-layer isolation: ChatService must not import from FastAPI ──────────
+
+
+def test_chat_service_does_not_import_fastapi() -> None:
+    """src.domain.chat must not import from fastapi (layer violation).
+
+    BLOCKER-1: HTTPException was imported inside get_or_create_conversation().
+    This test guards against regression.
+    """
+    import importlib
+    import sys
+
+    # Force a clean reload to bypass any cached module state
+    mod_name = "src.domain.chat"
+    if mod_name in sys.modules:
+        del sys.modules[mod_name]
+
+    mod = importlib.import_module(mod_name)
+    source_file = mod.__file__ or ""
+
+    # Read the source and assert no fastapi import is present
+    with open(source_file) as f:
+        source = f.read()
+
+    assert "from fastapi" not in source, (
+        "src/domain/chat.py must not import from fastapi — domain layer must stay "
+        "independent of the transport layer (BLOCKER-1)."
+    )
+    assert "import fastapi" not in source, (
+        "src/domain/chat.py must not import fastapi — domain layer must stay "
+        "independent of the transport layer (BLOCKER-1)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_conversation_missing_raises_domain_exception() -> None:
+    """get_or_create_conversation raises ConversationNotFoundError, not HTTPException.
+
+    BLOCKER-1 fix verification: domain layer must raise ConversationNotFoundError
+    (a domain exception), not HTTPException (a transport-layer exception).
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.core.exceptions import ConversationNotFoundError
+    from src.domain.chat import ChatService
+
+    session = MagicMock(spec=AsyncSession)
+    # db.get() returns None → conversation not found
+    session.get = AsyncMock(return_value=None)
+
+    ctx = _make_ctx()
+    svc = ChatService()
+
+    with pytest.raises(ConversationNotFoundError):
+        await svc.get_or_create_conversation(
+            db=session,
+            ctx=ctx,
+            pipeline_id=uuid.uuid4(),
+            conversation_id=uuid.uuid4(),  # non-None triggers the lookup path
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_conversation_wrong_tenant_raises_domain_exception() -> None:
+    """get_or_create_conversation raises ConversationNotFoundError when tenant_id mismatches.
+
+    Verifies that cross-tenant conversation access is rejected at the domain level
+    without leaking whether the conversation exists (always 404, never 403).
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.core.exceptions import ConversationNotFoundError
+    from src.db.models.conversation import Conversation
+    from src.domain.chat import ChatService
+
+    other_tenant_id = uuid.uuid4()
+    conv = MagicMock(spec=Conversation)
+    conv.tenant_id = other_tenant_id  # different tenant
+    conv.user_id = USER_ID
+    conv.is_deleted = False
+
+    session = MagicMock(spec=AsyncSession)
+    session.get = AsyncMock(return_value=conv)
+
+    ctx = _make_ctx()  # ctx.tenant_id == TENANT_ID != other_tenant_id
+    svc = ChatService()
+
+    with pytest.raises(ConversationNotFoundError):
+        await svc.get_or_create_conversation(
+            db=session,
+            ctx=ctx,
+            pipeline_id=uuid.uuid4(),
+            conversation_id=uuid.uuid4(),
+        )

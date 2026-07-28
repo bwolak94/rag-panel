@@ -15,18 +15,16 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from langfuse import observe
 
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.graphs.query_graph.state import QueryState
 
 logger = structlog.get_logger(__name__)
 
-_DISCLAIMER_PATH = (
-    Path(__file__).parent.parent.parent / "prompts" / "disclaimer_medical_pl_v1.md"
-)
+_DISCLAIMER_PATH = Path(__file__).parent.parent.parent / "prompts" / "disclaimer_medical_pl_v1.md"
 
-_OUT_OF_SCOPE_ANSWER = (
-    "To pytanie wykracza poza zakres dokumentów dostępnych w systemie."
-)
+_OUT_OF_SCOPE_ANSWER = "To pytanie wykracza poza zakres dokumentów dostępnych w systemie."
 
 _NO_RESULTS_ANSWER = (
     "Nie znalazłem odpowiedzi w dostępnych dokumentach. "
@@ -44,6 +42,7 @@ def _load_disclaimer() -> str:
     return _disclaimer_cache
 
 
+@observe(capture_input=False, capture_output=False)
 async def node_guardrails_output(state: QueryState, config: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     """Apply guardrails to the pipeline output.
 
@@ -73,6 +72,11 @@ async def node_guardrails_output(state: QueryState, config: dict[str, Any]) -> d
         answer = state.answer or ""
         case_applied = "passthrough"
 
+    _lf_update_span(
+        metadata={
+            "tenant_id": str(state.tenant_id),
+        }
+    )
     logger.info(
         "node_guardrails_output.completed",
         tenant_id=str(state.tenant_id),

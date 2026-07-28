@@ -117,3 +117,45 @@ async def test_service_unavailable_returns_503_with_retry_after(
     resp = await exc_client.get("/raise/service-unavailable")
     assert resp.status_code == 503
     assert resp.headers.get("Retry-After") == "60"
+
+
+@pytest.mark.asyncio
+async def test_conversation_not_found_returns_404_with_code(exc_client: AsyncClient) -> None:
+    """ConversationNotFoundError → HTTP 404 with structured code detail."""
+    from fastapi import FastAPI
+    from fastapi.routing import APIRouter
+    from httpx import ASGITransport
+    from httpx import AsyncClient as _AsyncClient
+
+    from src.api.exception_handlers import register_exception_handlers
+    from src.core.exceptions import ConversationNotFoundError
+    from src.core.logging import configure_logging
+
+    configure_logging()
+    app2 = FastAPI()
+    register_exception_handlers(app2)
+    r2 = APIRouter()
+
+    @r2.get("/raise/conversation-not-found")
+    async def raise_conv_not_found() -> None:
+        raise ConversationNotFoundError("CONVERSATION_NOT_FOUND")
+
+    app2.include_router(r2)
+
+    async with _AsyncClient(
+        transport=ASGITransport(app=app2), base_url="http://test"
+    ) as client:
+        resp = await client.get("/raise/conversation-not-found")
+
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body["detail"] == {"code": "CONVERSATION_NOT_FOUND"}
+
+
+@pytest.mark.asyncio
+async def test_conversation_not_found_is_subtype_of_not_found() -> None:
+    """ConversationNotFoundError must be a subtype of NotFoundError (inherits 404 mapping)."""
+    from src.core.exceptions import ConversationNotFoundError, NotFoundError
+
+    exc = ConversationNotFoundError("test")
+    assert isinstance(exc, NotFoundError)

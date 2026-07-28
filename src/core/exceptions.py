@@ -14,6 +14,16 @@ class NotFoundError(RAGPlatformError):
     """Resource not found. Maps to HTTP 404."""
 
 
+class ConversationNotFoundError(NotFoundError):
+    """Conversation not found or not owned by the requesting user. Maps to HTTP 404.
+
+    Raised by ChatService.get_or_create_conversation() when the conversation_id
+    does not exist, belongs to another tenant, belongs to another user, or is deleted.
+    Kept as a subtype of NotFoundError so the global handler maps it to 404 without
+    any extra registration.
+    """
+
+
 class PermissionDeniedError(RAGPlatformError):
     """Authorization failure. Maps to HTTP 403."""
 

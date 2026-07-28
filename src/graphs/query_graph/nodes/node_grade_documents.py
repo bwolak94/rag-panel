@@ -14,8 +14,10 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from langfuse import observe
 
 from src.core.exceptions import QueryNodeError
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.graphs.query_graph.state import QueryState
 
 logger = structlog.get_logger(__name__)
@@ -65,6 +67,7 @@ def _build_batch_prompt(question: str, chunks: list[dict[str, Any]]) -> str:
     return system_part + batch_instruction
 
 
+@observe(capture_input=False, capture_output=False)
 async def node_grade_documents(state: QueryState, config: dict[str, Any]) -> dict[str, Any]:
     """Grade retrieved chunks for relevance. Filter out irrelevant ones.
 
@@ -84,6 +87,13 @@ async def node_grade_documents(state: QueryState, config: dict[str, Any]) -> dic
 
     chunks = state.retrieved_chunks
     if not chunks:
+        _lf_update_span(
+            metadata={
+                "tenant_id": str(state.tenant_id),
+                "relevant_count": 0,
+                "total_count": 0,
+            }
+        )
         logger.info(
             "node_grade_documents.no_chunks_to_grade",
             tenant_id=str(state.tenant_id),
@@ -94,9 +104,7 @@ async def node_grade_documents(state: QueryState, config: dict[str, Any]) -> dic
 
     from src.db.models.models_registry import ModelsRegistry
 
-    result = await db.execute(
-        select(ModelsRegistry).where(ModelsRegistry.id == state.llm_model_id)
-    )
+    result = await db.execute(select(ModelsRegistry).where(ModelsRegistry.id == state.llm_model_id))
     model_record = result.scalar_one_or_none()
     if model_record is None:
         raise QueryNodeError(f"LLM model not found: llm_model_id={state.llm_model_id}")
@@ -137,11 +145,16 @@ async def node_grade_documents(state: QueryState, config: dict[str, Any]) -> dic
             if isinstance(idx, int):
                 relevant_indices.add(idx)
 
-    graded_chunks = [
-        chunk for i, chunk in enumerate(chunks, start=1) if i in relevant_indices
-    ]
+    graded_chunks = [chunk for i, chunk in enumerate(chunks, start=1) if i in relevant_indices]
     no_results = len(graded_chunks) == 0
 
+    _lf_update_span(
+        metadata={
+            "tenant_id": str(state.tenant_id),
+            "relevant_count": len(graded_chunks),
+            "total_count": len(chunks),
+        }
+    )
     logger.info(
         "node_grade_documents.completed",
         tenant_id=str(state.tenant_id),

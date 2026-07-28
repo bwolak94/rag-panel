@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from langfuse import observe
 
 from src.core.exceptions import QueryNodeError
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.graphs.query_graph.state import QueryState
 
 logger = structlog.get_logger(__name__)
@@ -34,6 +36,7 @@ def _load_prompt() -> str:
     return _prompt_cache
 
 
+@observe(capture_input=False, capture_output=False)
 async def node_classify_intent(state: QueryState, config: dict[str, Any]) -> dict[str, Any]:
     """Classify the user's question intent.
 
@@ -56,9 +59,7 @@ async def node_classify_intent(state: QueryState, config: dict[str, Any]) -> dic
 
     from src.db.models.models_registry import ModelsRegistry
 
-    result = await db.execute(
-        select(ModelsRegistry).where(ModelsRegistry.id == state.llm_model_id)
-    )
+    result = await db.execute(select(ModelsRegistry).where(ModelsRegistry.id == state.llm_model_id))
     model_record = result.scalar_one_or_none()
     if model_record is None:
         raise QueryNodeError(f"LLM model not found: llm_model_id={state.llm_model_id}")
@@ -97,6 +98,13 @@ async def node_classify_intent(state: QueryState, config: dict[str, Any]) -> dic
         raise QueryNodeError(f"classify_intent_llm_error: {type(exc).__name__}") from exc
 
     halt = intent != "topical"
+    _lf_update_span(
+        metadata={
+            "tenant_id": str(state.tenant_id),
+            "intent": intent,
+            "halt": halt,
+        }
+    )
     logger.info(
         "node_classify_intent.completed",
         tenant_id=str(state.tenant_id),

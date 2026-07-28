@@ -47,17 +47,17 @@ def build_ingest_graph(checkpointer: Any = None) -> Any:
     """
     from langgraph.graph import END, StateGraph
 
-    builder: StateGraph = StateGraph(IngestState)
+    builder: StateGraph = StateGraph(IngestState)  # type: ignore[type-arg]
 
-    builder.add_node("node_fetch", nodes.node_fetch)
-    builder.add_node("node_extract", nodes.node_extract)
-    builder.add_node("node_dedupe", nodes.node_dedupe)
-    builder.add_node("node_validate", nodes.node_validate)
-    builder.add_node("node_pii_scan", nodes.node_pii_scan)
-    builder.add_node("node_chunk", nodes.node_chunk)
-    builder.add_node("node_embed", nodes.node_embed)
-    builder.add_node("node_upsert", nodes.node_upsert)
-    builder.add_node("node_persist", nodes.node_persist)
+    builder.add_node("node_fetch", nodes.node_fetch)  # type: ignore[call-overload]
+    builder.add_node("node_extract", nodes.node_extract)  # type: ignore[call-overload]
+    builder.add_node("node_dedupe", nodes.node_dedupe)  # type: ignore[call-overload]
+    builder.add_node("node_validate", nodes.node_validate)  # type: ignore[call-overload]
+    builder.add_node("node_pii_scan", nodes.node_pii_scan)  # type: ignore[call-overload]
+    builder.add_node("node_chunk", nodes.node_chunk)  # type: ignore[call-overload]
+    builder.add_node("node_embed", nodes.node_embed)  # type: ignore[call-overload]
+    builder.add_node("node_upsert", nodes.node_upsert)  # type: ignore[call-overload]
+    builder.add_node("node_persist", nodes.node_persist)  # type: ignore[call-overload]
 
     builder.set_entry_point("node_fetch")
     builder.add_edge("node_fetch", "node_extract")

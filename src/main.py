@@ -1,5 +1,6 @@
 """FastAPI application factory."""
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -12,6 +13,7 @@ from src.api.exception_handlers import register_exception_handlers
 from src.api.routers import chat, collections, conversations, documents, health, messages, tenants
 from src.api.routers.webhooks import webhook_router
 from src.core.config import settings
+from src.core.langfuse_client import initialize_langfuse, shutdown_langfuse
 from src.core.logging import configure_logging
 
 logger = structlog.get_logger(__name__)
@@ -21,6 +23,9 @@ logger = structlog.get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup and shutdown lifecycle management."""
     logger.info("startup", version=settings.APP_VERSION, environment=settings.ENVIRONMENT)
+
+    # Initialize Langfuse tracing (no-op when keys are absent)
+    initialize_langfuse()
 
     # Warm up Postgres connection pool
     from src.core.database import engine
@@ -39,6 +44,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Graceful shutdown
     logger.info("shutdown")
+    # shutdown_langfuse() calls blocking flush()/shutdown() — offload to thread pool
+    # so the async event loop is not stalled during Langfuse HTTP flush.
+    await asyncio.to_thread(shutdown_langfuse)
     await engine.dispose()
     await app.state.qdrant_client.close()
 
@@ -69,8 +77,8 @@ def create_app() -> FastAPI:
     app.include_router(tenants.router, prefix="/api/v1")
     app.include_router(documents.router)  # /api/v1/documents
     app.include_router(chat.router)  # /v1/models, /v1/chat/completions
-    app.include_router(conversations.router)  # /conversations
-    app.include_router(messages.router)  # /messages/{id}/feedback
+    app.include_router(conversations.router, prefix="/api/v1")  # /api/v1/conversations
+    app.include_router(messages.router, prefix="/api/v1")  # /api/v1/messages/{id}/feedback
     app.include_router(webhook_router)  # /internal/minio-webhook
 
     return app

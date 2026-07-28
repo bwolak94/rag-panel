@@ -15,8 +15,10 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+from langfuse import observe
 
 from src.core.exceptions import QueryNodeError
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.graphs.query_graph.state import QueryState
 from src.retrieval.exceptions import EmptyCollectionListError
 from src.retrieval.schemas import TenantContext
@@ -40,6 +42,7 @@ def _make_qdrant_collection_name(model_record: Any) -> str:
     return f"emb_{derived}"
 
 
+@observe(capture_input=False, capture_output=False)
 async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, Any]:
     """Embed the rewritten query and search Qdrant for relevant chunks.
 
@@ -83,9 +86,7 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
     )
     model_record = model_result.scalar_one_or_none()
     if model_record is None:
-        raise QueryNodeError(
-            f"embedding model not found: {collection.embedding_model_id}"
-        )
+        raise QueryNodeError(f"embedding model not found: {collection.embedding_model_id}")
 
     qdrant_collection = _make_qdrant_collection_name(model_record)
     query_text = state.rewritten_query or state.question
@@ -99,9 +100,7 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
         )
         query_vector: list[float] = embed_response.data[0].embedding
     except Exception as exc:
-        raise QueryNodeError(
-            f"embedding_error: {type(exc).__name__}"
-        ) from exc
+        raise QueryNodeError(f"embedding_error: {type(exc).__name__}") from exc
 
     # Build tenant context
     tenant_ctx = TenantContext(
@@ -138,6 +137,13 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
         retrieved_chunks.append(chunk)
 
     elapsed_ms = int((datetime.now(UTC) - node_start).total_seconds() * 1000)
+    _lf_update_span(
+        metadata={
+            "tenant_id": str(state.tenant_id),
+            "chunk_count": len(retrieved_chunks),
+            "qdrant_collection": qdrant_collection,
+        }
+    )
     logger.info(
         "node_retrieve.completed",
         tenant_id=str(state.tenant_id),
