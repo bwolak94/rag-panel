@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -132,3 +133,91 @@ class DocumentRepository:
         self, document_id: uuid.UUID, tenant_id: uuid.UUID
     ) -> None:
         await self.update_status(document_id, tenant_id, "deleted")
+
+    async def list_needs_review(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> tuple[list[Document], int]:
+        """Return paginated documents in needs_review status for a tenant.
+
+        Args:
+            tenant_id: Tenant to scope the query.
+            offset: Number of records to skip.
+            limit: Maximum records to return.
+
+        Returns:
+            Tuple of (documents list, total count).
+        """
+        from sqlalchemy import func
+
+        q = (
+            select(Document)
+            .where(
+                Document.tenant_id == tenant_id,
+                Document.status == "needs_review",
+            )
+            .order_by(Document.created_at.asc())
+        )
+        count_q = (
+            select(func.count())
+            .select_from(Document)
+            .where(
+                Document.tenant_id == tenant_id,
+                Document.status == "needs_review",
+            )
+        )
+        items_q = q.offset(offset).limit(limit)
+        items = list((await self._session.execute(items_q)).scalars().all())
+        total = (await self._session.execute(count_q)).scalar_one()
+        return items, total
+
+    async def set_reviewed(
+        self,
+        document_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        *,
+        status: str,
+        reviewed_by: uuid.UUID,
+        reviewed_at: datetime,
+    ) -> None:
+        """Update document status and reviewer info after admin review decision.
+
+        Args:
+            document_id: Document to update.
+            tenant_id: Tenant scope (prevents cross-tenant update).
+            status: New status ('indexing' or 'rejected').
+            reviewed_by: UUID of the admin who made the decision.
+            reviewed_at: Timestamp of the review decision.
+        """
+        await self._session.execute(
+            update(Document)
+            .where(Document.id == document_id, Document.tenant_id == tenant_id)
+            .values(status=status, reviewed_by=reviewed_by, reviewed_at=reviewed_at)
+        )
+        await self._session.flush()
+
+    async def get_latest_job(
+        self, document_id: uuid.UUID, tenant_id: uuid.UUID
+    ) -> IngestionJob | None:
+        """Return the most recent IngestionJob for a document.
+
+        Args:
+            document_id: Document whose job to fetch.
+            tenant_id: Tenant scope.
+
+        Returns:
+            Most recent IngestionJob or None if not found.
+        """
+        q = (
+            select(IngestionJob)
+            .where(
+                IngestionJob.document_id == document_id,
+                IngestionJob.tenant_id == tenant_id,
+            )
+            .order_by(IngestionJob.created_at.desc())
+            .limit(1)
+        )
+        return (await self._session.execute(q)).scalar_one_or_none()

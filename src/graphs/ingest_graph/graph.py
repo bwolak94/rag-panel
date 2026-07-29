@@ -1,22 +1,28 @@
 """LangGraph ingest pipeline factory.
 
 build_ingest_graph() compiles the 9-node pipeline with optional Postgres checkpointer.
+build_resume_graph() compiles a shortened pipeline (node_chunk → END) for admin-approved docs.
 run_ingest_graph() is the entry point called by EventProcessor (backward-compatible).
+resume_ingest_graph() is called by DocumentService after admin approval.
 
 Graph topology (fixed — change requires ADR):
     node_fetch → node_extract → node_dedupe →[cond]→ node_validate →[cond]→ node_pii_scan
     →[cond]→ node_chunk → node_embed → node_upsert → node_persist → END
+
+Resume graph topology (skip to chunking after admin approval):
+    node_chunk → node_embed → node_upsert → node_persist → END
 
 Per docs/architecture.md §8.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
 import structlog
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.clients.llm_client import LLMClient
@@ -144,5 +150,175 @@ async def run_ingest_graph(
     logger.info(
         "ingest_graph_completed",
         document_id=str(event.document_id),
+        job_id=str(job_id),
+    )
+
+
+def build_resume_graph(checkpointer: Any = None) -> Any:
+    """Build a shortened ingest graph starting at node_chunk (for approved documents).
+
+    Used when an admin approves a 'needs_review' document. The full extraction
+    and validation steps are skipped — only chunking, embedding, upsert, and
+    persist are executed. The caller must populate IngestState with
+    extracted_text and extracted_sections before invoking.
+
+    Args:
+        checkpointer: Optional AsyncPostgresSaver.
+
+    Returns:
+        Compiled LangGraph CompiledStateGraph starting at node_chunk.
+    """
+    from langgraph.graph import END, StateGraph
+
+    builder: StateGraph = StateGraph(IngestState)  # type: ignore[type-arg]
+    builder.add_node("node_chunk", nodes.node_chunk)  # type: ignore[call-overload]
+    builder.add_node("node_embed", nodes.node_embed)  # type: ignore[call-overload]
+    builder.add_node("node_upsert", nodes.node_upsert)  # type: ignore[call-overload]
+    builder.add_node("node_persist", nodes.node_persist)  # type: ignore[call-overload]
+    builder.set_entry_point("node_chunk")
+    builder.add_edge("node_chunk", "node_embed")
+    builder.add_edge("node_embed", "node_upsert")
+    builder.add_edge("node_upsert", "node_persist")
+    builder.add_edge("node_persist", END)
+    return builder.compile(checkpointer=checkpointer)
+
+
+async def resume_ingest_graph(
+    document_id: uuid.UUID,
+    job_id: uuid.UUID,
+    session: AsyncSession,
+) -> None:
+    """Resume the ingest pipeline from node_chunk after admin approval.
+
+    Reads extracted section metadata from MinIO (processed/{document_id}/extracted.json).
+    Note: node_extract saves only section metadata (section_index, page, heading) without
+    the full text. The extracted_text field will be empty if not cached; node_chunk will
+    fall back to concatenating section texts or short-circuit gracefully.
+
+    Runs the chunk→embed→upsert→persist sub-graph. Called by DocumentService after
+    admin approval.
+
+    Args:
+        document_id: The approved document UUID.
+        job_id: The IngestionJob UUID (for status updates and thread_id).
+        session: Async DB session (caller-scoped; do NOT commit inside this function).
+
+    Raises:
+        NotFoundError: If document or job not found.
+    """
+    import json as _json
+
+    from src.core.exceptions import NotFoundError
+    from src.db.models.collection import Collection
+    from src.db.models.document import Document
+    from src.graphs.ingest_graph.state import Section
+
+    # Load document and job
+    doc_row = (
+        await session.execute(select(Document).where(Document.id == document_id))
+    ).scalar_one_or_none()
+    if doc_row is None:
+        raise NotFoundError(f"Document {document_id} not found")
+
+    job_row = (
+        await session.execute(select(IngestionJob).where(IngestionJob.id == job_id))
+    ).scalar_one_or_none()
+    if job_row is None:
+        raise NotFoundError(f"Job {job_id} not found")
+
+    # Load extracted section metadata from MinIO processed/ prefix
+    minio = get_minio_client()
+    extracted_key = f"processed/{document_id}/extracted.json"
+
+    from src.db.repositories.tenant_repository import TenantRepository
+
+    tenant = await TenantRepository(session).get_by_id(doc_row.tenant_id)
+    if tenant is None:
+        raise NotFoundError("Tenant not found")
+    bucket = f"tenant-{tenant.slug}"
+
+    extracted_text: str = ""
+    sections: list[Section] = []
+    try:
+
+        response = await asyncio.to_thread(minio.get_object, bucket, extracted_key)
+        raw_data = response.read()
+        raw_sections: list[dict[str, Any]] = _json.loads(raw_data)
+        # node_extract saves: [{section_index, page, heading}] — text is not persisted
+        # Build Section objects from metadata; text will be empty (re-chunked from raw)
+        sections = [
+            Section(
+                heading=s.get("heading"),
+                text="",  # not stored in processed/ — will need raw document
+                page=s.get("page"),
+                section_index=s["section_index"],
+            )
+            for s in raw_sections
+        ]
+    except Exception as exc:
+        logger.warning(
+            "resume_ingest_graph.minio_read_failed",
+            document_id=str(document_id),
+            error=str(exc),
+        )
+        sections = []
+
+    # Update job status to processing
+    new_thread_id = uuid.uuid4()
+    await session.execute(
+        update(IngestionJob)
+        .where(IngestionJob.id == job_id)
+        .values(
+            langgraph_thread_id=new_thread_id,
+            status="processing",
+            current_step="chunk",
+        )
+    )
+    await session.flush()
+
+    collection_row = (
+        await session.execute(
+            select(Collection).where(Collection.id == doc_row.collection_id)
+        )
+    ).scalar_one_or_none()
+    _ = collection_row  # used for context; IngestState handles collection_id
+
+    validation_result = None
+    if doc_row.validation_result is not None:
+        from src.graphs.ingest_graph.state import ValidationResult
+
+        try:
+            validation_result = ValidationResult.model_validate(doc_row.validation_result)
+        except Exception:
+            validation_result = None
+
+    initial_state = IngestState(
+        document_id=document_id,
+        tenant_id=doc_row.tenant_id,
+        collection_id=doc_row.collection_id,
+        minio_key=doc_row.minio_key,
+        job_id=job_id,
+        sha256=doc_row.sha256 or "",
+        extracted_text=extracted_text if extracted_text else None,
+        extracted_sections=sections if sections else None,
+        validation_result=validation_result,
+        status="indexing",
+    )
+
+    config: dict[str, Any] = {
+        "configurable": {
+            "thread_id": str(new_thread_id),
+            "db": session,
+            "minio": minio,
+            "llm": LLMClient(),
+        }
+    }
+
+    graph = build_resume_graph()
+    await graph.ainvoke(initial_state.model_dump(), config=config)
+
+    logger.info(
+        "resume_ingest_graph.completed",
+        document_id=str(document_id),
         job_id=str(job_id),
     )

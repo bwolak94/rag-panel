@@ -1496,3 +1496,136 @@ Reason: Section 11 described the MVP as a prose list of services. It contained n
 - The data-model.md §4 event flow diagram still shows `{bucket, key, size, content_type}` as the MinIO notification payload. This is accurate for the raw MinIO webhook but conflicts with the enriched event schema in the new section 15. The data-model.md should be updated to reference section 15 of this document as the canonical event schema source. This is a documentation-only change; no architectural decision is needed.
 
 - The `ingestion_jobs` table has no index on `(tenant_id)`. All operational queries on this table (queue monitoring, admin review) are filtered by document, which implicitly filters by tenant via the documents FK. However, cross-document queries by tenant (e.g., "how many jobs are running for tenant X?") would require a full scan. Whether to add `tenant_id` directly to `ingestion_jobs` is a data model decision for the architect.
+
+---
+
+### ADR-12: DeletionService and Admin Review Queue (TASK-014)
+
+**Status:** Accepted
+**Date:** 2026-07-29
+
+**Context:**
+
+The platform handles medical data under GDPR. Article 17 (right to erasure) requires that when a user or admin requests deletion, data must be removed from all stores -- not just soft-deleted in Postgres. Currently, delete endpoints (documents, conversations) perform soft-deletes (setting `status = 'deleted'` or `is_deleted = true`) but never actually remove vectors from Qdrant or objects from MinIO. This means the platform is non-compliant with GDPR Art. 17 for any delete request.
+
+Separately, the ingest graph already supports a `needs_review` checkpoint: when `node_validate` or `node_pii_scan` determines a document requires human review, the graph halts with `status = 'needs_review'` and the LangGraph checkpoint is preserved (via `langgraph_thread_id` in `ingestion_jobs`). Two endpoints are documented in `docs/api.md` (section 3) for the review queue but are not implemented: `GET /documents/review-queue` and `POST /documents/{id}/review`.
+
+These two features share a common dependency on document lifecycle management and are grouped in this ADR.
+
+Existing infrastructure:
+- `RetrievalService.delete_by_document(ctx, qdrant_collection, document_id)` -- deletes Qdrant points filtered by tenant_id and document_id.
+- `RetrievalService.delete_by_tenant(ctx, qdrant_collection)` -- deletes all points for a tenant.
+- `src/core/clients/minio_client.py` -- synchronous minio-py client; must run in `asyncio.to_thread()`.
+- `chunks_registry` -- maps `document_id` to `qdrant_point_id` but does NOT have a `collection_id` column.
+- `documents.collection_id` FK to `collections` table; `collections.embedding_model_id` FK to `models_registry`.
+- `models_registry.model_id` -- the model slug used in the Qdrant collection name convention `emb_{slug}` (ADR-7).
+- `documents.minio_key` -- the full key path in MinIO; bucket is `tenant-{tenant.slug}`.
+- `ingestion_jobs.langgraph_thread_id` -- UUID of the LangGraph thread for checkpoint resumption.
+- `build_ingest_graph(checkpointer)` -- compiles the ingest graph with optional Postgres checkpointer.
+- `AuditService` -- append-only audit log.
+
+**Decision:**
+
+**1. DeletionService scope (MVP).**
+
+`DeletionService` supports three deletion scopes, implemented in priority order:
+
+- **Document deletion** (`delete_document`) -- cascades: Postgres (hard-delete `chunks_registry` rows for the document, hard-delete `ingestion_jobs` for the document, hard-delete the `documents` row) then Qdrant (via `RetrievalService.delete_by_document`) then MinIO (remove the object at `document.minio_key` from bucket `tenant-{tenant.slug}`). The `messages_sources.document_id` FK is `ON DELETE SET NULL`, so citations are preserved as orphaned references (the citation text remains but the document link becomes null). This is the correct GDPR behavior: the source document is erased but the conversation history (which the user owns) is retained with broken links.
+
+- **Conversation deletion** (`delete_conversation`) -- hard-deletes the `conversations` row. Because `messages.conversation_id` is `ON DELETE CASCADE` and `message_sources.message_id` is `ON DELETE CASCADE`, Postgres handles the full cascade. No Qdrant or MinIO work needed (conversations do not produce vectors or files).
+
+- **Tenant deletion** (`delete_tenant`) -- cascades: for each Qdrant collection that contains the tenant's data, call `RetrievalService.delete_by_tenant`. Remove all objects from the MinIO bucket `tenant-{tenant.slug}`, then remove the bucket. Finally hard-delete the `tenants` row (all child tables cascade via `ON DELETE CASCADE`). This is a destructive operation limited to `platform:admin` permission.
+
+**2. Synchronous deletion (inline in the HTTP request).**
+
+Deletion runs synchronously within the request handler's transaction. Rationale:
+- Document deletion touches at most one Qdrant collection and one MinIO object. With the retry policies from section 16 (Qdrant delete: 3 attempts, max 30s; MinIO: 3 attempts, max 60s), the worst-case latency is under 90 seconds, well within typical HTTP timeout budgets.
+- Synchronous execution avoids the complexity of a background task system (Celery, ARQ, or a custom Redis-based worker) for an operation that happens infrequently.
+- If Qdrant or MinIO is unreachable after retries, the entire transaction rolls back (Postgres changes are not committed) and the client receives a 503 with `Retry-After: 60`. This guarantees atomicity: either all three stores are cleaned or none are.
+- Tenant deletion may be slow for tenants with many documents. For MVP this is acceptable because tenant deletion is an extremely rare admin operation. If it becomes a problem, tenant deletion specifically can be moved to a background task in a future ADR without changing the document/conversation deletion flow.
+
+The order of operations within a single `delete_document` call is: (a) query Postgres for the document and related metadata (collection, embedding model slug, tenant slug), (b) delete Qdrant points via `RetrievalService`, (c) delete MinIO object via `asyncio.to_thread()`, (d) hard-delete Postgres rows, (e) write audit log entry, (f) router commits the transaction. If step (b) or (c) fails, the exception propagates and the router does not commit, so Postgres remains unchanged. Qdrant and MinIO deletions are idempotent (deleting a non-existent point or object is a no-op), so retrying the entire operation after a partial failure is safe.
+
+**3. MinIO bucket and key derivation.**
+
+The MinIO bucket name is `tenant-{tenant.slug}`. The object key is `document.minio_key` (already stored in the `documents` table, e.g., `raw/{collection_id}/{document_id}/{filename}`). `DeletionService` receives the tenant slug and minio_key as parameters resolved by the caller (service or router) from the loaded `Document` and `Tenant` models. It does not query for them itself -- this keeps the service focused on orchestrating the three-store cascade.
+
+For tenant deletion, the entire bucket is emptied and removed. The minio-py client provides `list_objects(bucket, recursive=True)` + `remove_objects(bucket, objects)` for bulk deletion, followed by `remove_bucket(bucket)`. All calls run in `asyncio.to_thread()`.
+
+**4. Qdrant collection name derivation.**
+
+The join path is: `documents.collection_id` -> `collections.embedding_model_id` -> `models_registry.model_id`. The Qdrant collection name is `emb_{model_id}` per ADR-7 (where `model_id` is the slug-like identifier from `models_registry.model_id`, e.g., `BAAI/bge-m3` becomes `emb_BAAI/bge-m3` -- but per the existing `ensure_collection` code, it uses `embedding_model_slug` which is a sanitized form).
+
+Rather than adding a `collection_id` or `qdrant_collection_name` column to `chunks_registry` (which would require a migration and could become stale if the embedding model changes), `DeletionService` resolves the Qdrant collection name at call time by joining `collections` and `models_registry`. This is a single read query executed before the delete operations. The join is cheap (both tables are small, indexed by PK) and avoids schema changes.
+
+The caller (document service or router) performs this join and passes the resolved `qdrant_collection_name: str` to `DeletionService.delete_document()`. This keeps `DeletionService` free of repository/ORM concerns.
+
+**5. Review queue resume mechanism.**
+
+When an admin approves a document via `POST /documents/{id}/review`:
+
+1. The router loads the `Document` and verifies `document.status == 'needs_review'` and `document.tenant_id == ctx.tenant_id`. If the document is not in `needs_review` status, return 409 Conflict.
+2. The router loads the `IngestionJob` for the document where `status == 'awaiting_review'` and retrieves `langgraph_thread_id`.
+3. If `decision == 'approve'`:
+   a. Update `ingestion_jobs.status = 'processing'` and `documents.status = 'validating'` (the graph will set the correct status as it proceeds).
+   b. Flush (to persist status before graph invocation).
+   c. Build the ingest graph with `AsyncPostgresSaver` as checkpointer.
+   d. Load the checkpoint via the checkpointer using the saved `thread_id`.
+   e. Resume the graph with `graph.ainvoke(None, config={"configurable": {"thread_id": str(thread_id)}})`. LangGraph resumes from the last checkpoint (the node after `node_validate` or `node_pii_scan`, whichever halted).
+   f. On success, the graph's `node_persist` sets `documents.status = 'ready'` and `ingestion_jobs.status = 'completed'`.
+   g. Update `documents.reviewed_by = ctx.user_id` and `documents.reviewed_at = now()`.
+4. If `decision == 'reject'`:
+   a. Set `documents.status = 'rejected'`, `ingestion_jobs.status = 'rejected'`.
+   b. Update `documents.reviewed_by = ctx.user_id` and `documents.reviewed_at = now()`.
+   c. Do NOT delete the MinIO file (the admin may want to re-review later; manual cleanup is via `DELETE /documents/{id}`).
+5. Write an audit log entry: `document.reviewed` with `{decision, document_id, note}`.
+
+The resume is synchronous (within the request). The remaining ingest steps (chunk, embed, upsert, persist) typically complete in under 30 seconds for a single document. If the LLM or Qdrant is unavailable, the graph node retry policy (section 16) applies, and on failure the document returns to `failed` status with an appropriate error.
+
+**6. Permission model.**
+
+| Action | Required permission | Notes |
+|---|---|---|
+| `DELETE /documents/{id}` (own document) | `documents:delete_own` | Author can delete their own uploads. Checked: `document.uploaded_by == ctx.user_id`. |
+| `DELETE /documents/{id}` (any document in tenant) | `documents:delete` | Admin-level. Implies `documents:delete_own`. |
+| `DELETE /conversations/{id}` | `chat:query` | Users can only delete their own conversations (enforced by `conversation.user_id == ctx.user_id`). |
+| `GET /documents/review-queue` | `documents:approve` | Lists `needs_review` documents for ctx.tenant_id. |
+| `POST /documents/{id}/review` | `documents:approve` | Approve or reject. |
+| `DELETE /tenants/{id}` (full erasure) | `platform:admin` | Cascading tenant deletion. |
+
+The `documents:delete` permission is a superset of `documents:delete_own`. The router checks: if user has `documents:delete`, allow; else if user has `documents:delete_own` AND `document.uploaded_by == ctx.user_id`, allow; else 403.
+
+**Alternatives considered:**
+
+- **Background deletion via Redis Streams.** Rejected for MVP. Adds operational complexity (new consumer group, DLQ handling, status polling endpoint). Synchronous deletion is simpler, atomic with the Postgres transaction, and fast enough for single-document deletes. Can be revisited if tenant deletion latency becomes a problem.
+
+- **Storing `qdrant_collection_name` in `chunks_registry`.** Rejected because it duplicates data derivable from the existing FK chain and introduces a risk of staleness if the embedding model is changed (reindex scenario). The two-table join at deletion time is negligible overhead.
+
+- **Soft-delete in Qdrant (set a `deleted=true` payload field) instead of hard delete.** Rejected because it does not satisfy GDPR Art. 17 -- the vector and associated payload (which may contain chunk text) would remain in Qdrant's storage. Hard deletion via `RetrievalService.delete_by_document` with a filter-based delete is the correct approach.
+
+- **Async resume of ingest graph (fire-and-forget from the review endpoint).** Rejected because the admin needs immediate feedback on whether the resume succeeded. Synchronous execution with proper error handling (409 if already processed, 503 if LLM/Qdrant unavailable) provides a better UX and simpler error handling.
+
+- **Separate `DeletionWorker` process.** Rejected for MVP. A dedicated worker would be warranted if deletion volume is high or if deletion needs to be scheduled (e.g., retention-based TTL expiry). For user-initiated GDPR requests, synchronous inline deletion is sufficient.
+
+**Consequences:**
+
+New files:
+- `src/domain/deletion_service.py` -- `DeletionService` with methods `delete_document()`, `delete_conversation()`, `delete_tenant()`. Depends on `RetrievalService` (injected), MinIO client (via `asyncio.to_thread`), `AuditService`. Never calls `session.commit()`.
+- `src/api/routers/documents.py` -- new router (or extend existing) with `DELETE /documents/{id}`, `GET /documents/review-queue`, `POST /documents/{id}/review`.
+- `src/api/schemas/document.py` -- `ReviewRequest` (decision: Literal["approve", "reject"], note: str | None), `ReviewQueueItem`, `ReviewQueueResponse`.
+- `src/domain/document_service.py` -- `DocumentService` with `get_review_queue()`, `review_document()`, `delete_document()`. Orchestrates `DeletionService` for delete, ingest graph resume for approve.
+- `src/db/repositories/document_repository.py` -- `DocumentRepository` with `get_by_id_for_tenant()`, `list_needs_review()`, `get_with_collection_and_model()` (join query returning document + qdrant_collection_name).
+- `tests/unit/test_deletion_service.py` -- unit tests for all three deletion scopes, mocking RetrievalService and MinIO.
+- `tests/unit/test_document_review.py` -- unit tests for review queue listing and approve/reject flows.
+- `tests/security/test_deletion_tenant_isolation.py` -- verify cross-tenant deletion is blocked; verify permission checks.
+- `tests/integration/test_deletion_cascade.py` -- integration test (testcontainers) verifying Postgres + Qdrant + MinIO cascade.
+
+Modified files:
+- `src/main.py` -- register the documents router.
+- `src/api/routers/chat.py` -- `DELETE /conversations/{id}` handler updated to call `DeletionService.delete_conversation()` for hard-delete instead of soft-delete.
+- `docs/api.md` -- update `DELETE /documents/{id}` description to reflect hard-delete cascade; no new endpoints needed (review queue endpoints already documented).
+
+Not changed:
+- `src/retrieval/service.py` -- already has the required `delete_by_document` and `delete_by_tenant` methods.
+- `src/db/models/chunks_registry.py` -- no schema change; no `collection_id` column added.
+- `src/graphs/ingest_graph/graph.py` -- the existing `build_ingest_graph(checkpointer)` is reused as-is for resume; a new `resume_ingest_graph()` helper function is added alongside `run_ingest_graph()` to encapsulate the checkpoint-loading and re-invocation logic.

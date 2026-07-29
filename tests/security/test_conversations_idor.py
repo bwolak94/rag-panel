@@ -113,7 +113,7 @@ def _make_app(ctx: UserContext, session: AsyncSession | MagicMock) -> Any:
 def _build_session(
     *, scalar_return: Any = None, scalars_return: list[Any] | None = None
 ) -> MagicMock:
-    """Return a minimal AsyncSession mock wired for scalar() and scalars()."""
+    """Return a minimal AsyncSession mock wired for scalar(), scalars(), and execute()."""
     session = MagicMock(spec=AsyncSession)
     session.scalar = AsyncMock(return_value=scalar_return)
     session.scalars = AsyncMock(return_value=iter(scalars_return or []))
@@ -121,6 +121,14 @@ def _build_session(
     session.flush = AsyncMock()
     session.commit = AsyncMock()
     session.refresh = AsyncMock()
+    session.delete = AsyncMock()
+
+    # Wire execute() so that scalar_one_or_none() returns scalar_return.
+    # DeletionService.delete_conversation uses session.execute(...).scalar_one_or_none()
+    execute_result = MagicMock()
+    execute_result.scalar_one_or_none = MagicMock(return_value=scalar_return)
+    session.execute = AsyncMock(return_value=execute_result)
+
     return session
 
 

@@ -45,7 +45,7 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(NotFoundError)
     async def not_found_handler(req: Request, exc: NotFoundError) -> JSONResponse:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
 
     @app.exception_handler(AuthenticationError)
     async def auth_handler(req: Request, exc: AuthenticationError) -> JSONResponse:
@@ -67,7 +67,7 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(ConflictError)
     async def conflict_handler(req: Request, exc: ConflictError) -> JSONResponse:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return JSONResponse(status_code=409, content={"detail": "Resource conflict"})
 
     @app.exception_handler(DomainValidationError)
     async def validation_handler(req: Request, exc: DomainValidationError) -> JSONResponse:

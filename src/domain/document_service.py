@@ -9,10 +9,20 @@ from datetime import UTC, datetime, timedelta
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.document import DocumentUploadRequest, DocumentUploadResponse
+from src.api.schemas.document import (
+    DocumentResponse,
+    DocumentUploadRequest,
+    DocumentUploadResponse,
+    ReviewQueueResponse,
+)
 from src.core.clients.minio_client import get_minio_client
 from src.core.config import settings
-from src.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError
+from src.core.exceptions import (
+    ConflictError,
+    DomainValidationError,
+    NotFoundError,
+    PermissionDeniedError,
+)
 from src.db.repositories.document_repository import DocumentRepository
 from src.db.repositories.tenant_repository import TenantRepository
 from src.domain.audit_service import AuditService
@@ -110,3 +120,162 @@ class DocumentService:
             minio_key=minio_key,
             expires_at=expires_at,
         )
+
+    async def list_review_queue(
+        self,
+        ctx: UserContext,
+        *,
+        offset: int,
+        limit: int,
+        page: int,
+        page_size: int,
+    ) -> ReviewQueueResponse:
+        """Return paginated documents awaiting admin review for this tenant.
+
+        Requires documents:approve permission (enforced at router level).
+        All documents returned include validation_result (admins only).
+
+        Args:
+            ctx: Authenticated user context from JWT.
+            offset: Number of records to skip.
+            limit: Maximum records per page.
+            page: Current page number (1-based).
+            page_size: Items per page.
+
+        Returns:
+            ReviewQueueResponse with items, total, page, page_size.
+        """
+        docs, total = await self._repo.list_needs_review(
+            ctx.tenant_id,
+            offset=offset,
+            limit=limit,
+        )
+
+        items = [DocumentResponse.model_validate(d) for d in docs]
+
+        logger.info(
+            "review_queue_listed",
+            tenant_id=str(ctx.tenant_id),
+            count=len(items),
+            total=total,
+        )
+
+        return ReviewQueueResponse(
+            items=items,
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+
+    async def review_document(
+        self,
+        *,
+        document_id: uuid.UUID,
+        decision: str,
+        note: str | None,
+        ctx: UserContext,
+        ip: str | None,
+        session: AsyncSession,
+    ) -> None:
+        """Process admin review decision for a needs_review document.
+
+        Args:
+            document_id: Document to review.
+            decision: "approve" or "reject".
+            note: Optional admin note (not logged for privacy).
+            ctx: Authenticated user context from JWT.
+            ip: Client IP for audit log.
+            session: Async DB session (caller manages commit).
+
+        Raises:
+            NotFoundError: If document not found or wrong tenant.
+            DomainValidationError: If document is not in needs_review status.
+        """
+        from sqlalchemy import update as sa_update
+
+        from src.db.models.ingestion_job import IngestionJob
+
+        doc = await self._repo.get_by_id(document_id, ctx.tenant_id)
+        if doc is None:
+            raise NotFoundError(f"Document {document_id} not found")
+
+        if doc.status != "needs_review":
+            raise DomainValidationError(
+                f"Document {document_id} is in status '{doc.status}', expected 'needs_review'"
+            )
+
+        reviewed_at = datetime.now(UTC)
+
+        if decision == "approve":
+            await self._repo.set_reviewed(
+                document_id,
+                ctx.tenant_id,
+                status="indexing",
+                reviewed_by=ctx.user_id,
+                reviewed_at=reviewed_at,
+            )
+
+            # Retrieve the latest job for this document to resume
+            job = await self._repo.get_latest_job(document_id, ctx.tenant_id)
+            if job is None:
+                raise NotFoundError(
+                    f"No ingestion job found for document {document_id}"
+                )
+
+            # Resume the ingest pipeline from node_chunk
+            from src.graphs.ingest_graph.graph import resume_ingest_graph
+
+            await resume_ingest_graph(
+                document_id=document_id,
+                job_id=job.id,
+                session=session,
+            )
+
+            await self._audit.log(
+                ctx=ctx,
+                action="document.review_approved",
+                resource_type="document",
+                resource_id=document_id,
+                details={"decision": "approve"},
+                ip=ip,
+            )
+
+            logger.info(
+                "document_review_approved",
+                document_id=str(document_id),
+                tenant_id=str(ctx.tenant_id),
+            )
+
+        elif decision == "reject":
+            await self._repo.set_reviewed(
+                document_id,
+                ctx.tenant_id,
+                status="rejected",
+                reviewed_by=ctx.user_id,
+                reviewed_at=reviewed_at,
+            )
+
+            # Mark the associated job as completed
+            job = await self._repo.get_latest_job(document_id, ctx.tenant_id)
+            if job is not None:
+                await session.execute(
+                    sa_update(IngestionJob)
+                    .where(IngestionJob.id == job.id)
+                    .values(status="completed")
+                )
+                await session.flush()
+
+            await self._audit.log(
+                ctx=ctx,
+                action="document.review_rejected",
+                resource_type="document",
+                resource_id=document_id,
+                details={"decision": "reject"},
+                ip=ip,
+            )
+
+            logger.info(
+                "document_review_rejected",
+                document_id=str(document_id),
+                tenant_id=str(ctx.tenant_id),
+            )

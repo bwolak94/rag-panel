@@ -73,7 +73,8 @@ async def exc_client() -> AsyncClient:
 async def test_not_found_returns_404(exc_client: AsyncClient) -> None:
     resp = await exc_client.get("/raise/not-found")
     assert resp.status_code == 404
-    assert "thing not found" in resp.json()["detail"]
+    # Generic message — must NOT expose exception detail (UUID/resource existence oracle)
+    assert resp.json()["detail"] == "Not found"
 
 
 @pytest.mark.asyncio

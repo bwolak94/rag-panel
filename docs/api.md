@@ -53,10 +53,10 @@ Rozszerzenia w odpowiedzi completions: pole `message_sources` (lista `MessageSou
 | GET | `/documents` | `documents:read` | lista z filtrem: `collection_id`, `status`, `category`, `q` |
 | GET | `/documents/{id}` | `documents:read` | metadane + status ingestu + wynik walidacji LLM |
 | GET | `/documents/{id}/download` | `documents:read` | presigned URL MinIO (TTL 5 min) |
-| DELETE | `/documents/{id}` | `documents:delete` (własne: `documents:delete_own`) | kasowanie kaskadowe: MinIO + chunki Qdrant + metadane; wpis audit |
+| DELETE | `/documents/{id}` | `documents:delete` (własne: `documents:delete_own`) | **Hard-delete kaskadowy** (ADR-12): Qdrant (punkty via `RetrievalService.delete_by_document`) → MinIO (obiekt `document.minio_key` z bucketu `tenant-{slug}`) → Postgres (chunks_registry, ingestion_jobs, documents). `message_sources.document_id` ustawiane na NULL (ON DELETE SET NULL). Synchronicznie w ramach requesta. Wpis audit `document.deleted`. |
 | POST | `/documents/{id}/reindex` | `documents:manage` | ponowny chunking/embedding (np. po zmianie konfiguracji) |
-| GET | `/documents/review-queue` | `documents:approve` | dokumenty `needs_review` (wynik walidacji, powód) |
-| POST | `/documents/{id}/review` | `documents:approve` | body: `{decision: approve/reject, note}`; approve → wznowienie grafu ingestu |
+| GET | `/documents/review-queue` | `documents:approve` | dokumenty `needs_review` dla tenanta admina; zwraca: `document_id`, `title`, `status`, `validation_result` (kategoria, confidence, powody), `uploaded_by`, `uploaded_at`. Paginacja standardowa. |
+| POST | `/documents/{id}/review` | `documents:approve` | body: `{decision: "approve"|"reject", note: string|null}`. `approve` → ustawia `ingestion_jobs.status='processing'`, wznawia graf ingestu z checkpointu LangGraph (`langgraph_thread_id`), graf kontynuuje od `node_chunk`/`node_pii_scan`. `reject` → `documents.status='rejected'`, `ingestion_jobs.status='rejected'`. Oba → `reviewed_by`, `reviewed_at`, wpis audit `document.reviewed`. 409 jeśli dokument nie jest w statusie `needs_review`. |
 | GET | `/ingestion-jobs/{job_id}` | `documents:read` | status pipeline'u per etap |
 
 ## 4. Kolekcje
