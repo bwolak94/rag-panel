@@ -20,13 +20,15 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def _mask_pii(data: Any) -> Any:
+def _mask_pii(*, data: Any, **_kwargs: Any) -> Any:
     """Langfuse mask callback — strips all input/output content as a defence-in-depth layer.
 
     security.md requires "Langfuse with masking enabled". Even though capture_input=False
     and capture_output=False are set on every @observe decorator, this mask provides a
     second layer: if any content accidentally reaches the SDK, it is replaced with a
     sentinel before export to the Langfuse server.
+
+    The MaskFunction protocol requires `data` as a keyword-only argument.
     """
     # Replace any string value with a sentinel. Dicts and other structures are left as-is
     # so that safe operational metadata (counts, booleans, UUIDs) passes through unchanged.

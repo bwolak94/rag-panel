@@ -1012,6 +1012,109 @@ Setting `capture_input=False, capture_output=False` prevents Langfuse from autom
 - The `pyproject.toml` dependency specifier should be tightened from `>=2.0` to `>=4.0` to match the actual API surface used (`langfuse.decorators`, `langfuse_context`).
 - Future ingest graph tracing will follow the same pattern established here.
 
+### ADR-11: Models Registry API and RAG Pipelines API (TASK-013)
+
+**Status:** Accepted
+**Date:** 2026-07-28
+
+**Context:**
+
+The query graph (`invoke_query_graph`) requires an LLM endpoint to call. The endpoint URL, model ID, and provider are stored in `models_registry`. RAG pipelines (`rag_pipelines`) combine a model, a set of collections, prompt configuration, and guardrails into a "virtual model" that Open WebUI presents in its model selector via `GET /v1/models`. Without admin CRUD for these two tables, operators must seed them manually via SQL.
+
+The ORM models already exist (`src/db/models/models_registry.py`, `src/db/models/rag_pipeline.py`) and are included in the initial migration. The chat router (`src/api/routers/chat.py`) reads `rag_pipelines` inline with raw `select()` queries. `ModelRepository` exists but only has `get_by_id` and `get_active_embedding_model` methods -- no list, create, update, or delete. No `PipelineRepository` exists.
+
+Tenant isolation rules differ between the two entities:
+- `ModelsRegistry.tenant_id` is nullable: NULL means a system-wide model available to every tenant. Non-NULL means the model is private to that specific tenant.
+- `RagPipeline.tenant_id` is always set (NOT NULL, FK to tenants).
+
+The API spec (section 5) declares CRUD on `/models` with `admin:models` permission. No separate `/pipelines` endpoint is specified yet, but it is required -- pipelines are distinct from models and have their own lifecycle. The `/v1/models` endpoint (OpenAI-compatible, section 2) remains read-only for `chat:query` users and is already implemented.
+
+**Decision:**
+
+**1. Two admin routers under `/api/v1`.**
+
+`/api/v1/models` -- CRUD for `models_registry`:
+
+| Method | Path | Permission | Description |
+|---|---|---|---|
+| GET | `/api/v1/models` | `chat:query` | List models visible to the tenant: system-wide (tenant_id IS NULL) + tenant-private (tenant_id = ctx.tenant_id). Never returns another tenant's private models. Supports `?type=llm|embedding` and `?is_active=true|false` filters. Paginated. |
+| GET | `/api/v1/models/{id}` | `chat:query` | Single model. Must be system-wide or belong to ctx.tenant_id. |
+| POST | `/api/v1/models` | `admin:models` | Create a model. If `tenant_id` is omitted in the body, the model is system-wide (requires `platform:admin` permission). If `tenant_id` is present in the body it MUST equal `ctx.tenant_id` (enforced server-side; body value is ignored, ctx.tenant_id is used). |
+| PATCH | `/api/v1/models/{id}` | `admin:models` | Update model fields (name, endpoint_url, model_id, params, allowed_roles, is_active). Cannot change `type` or `provider` after creation (would break existing collections/pipelines). System-wide models require `platform:admin`. |
+| DELETE | `/api/v1/models/{id}` | `admin:models` | Soft-delete (set is_active=false). Returns 409 Conflict if any active pipeline references this model via `llm_model_id`. System-wide models require `platform:admin`. |
+
+`/api/v1/pipelines` -- CRUD for `rag_pipelines`:
+
+| Method | Path | Permission | Description |
+|---|---|---|---|
+| GET | `/api/v1/pipelines` | `chat:query` | List active pipelines for ctx.tenant_id. Admin with `admin:models` can include inactive (`?include_inactive=true`). Paginated. |
+| GET | `/api/v1/pipelines/{id}` | `chat:query` | Single pipeline. Must belong to ctx.tenant_id. |
+| POST | `/api/v1/pipelines` | `admin:models` | Create a pipeline. `tenant_id` is always set from ctx.tenant_id (never from body). Validates: (a) `llm_model_id` exists and is active and is type=llm; (b) the referenced model is system-wide OR belongs to ctx.tenant_id; (c) all `collection_ids` exist and belong to ctx.tenant_id; (d) name is unique within tenant (enforced by DB constraint `uq_rag_pipelines_tenant_name`). |
+| PATCH | `/api/v1/pipelines/{id}` | `admin:models` | Update pipeline fields (name, collection_ids, llm_model_id, prompt_config, guardrails, is_active). Same FK validations as POST apply when changing `llm_model_id` or `collection_ids`. |
+| DELETE | `/api/v1/pipelines/{id}` | `admin:models` | Hard delete. Pipeline is a configuration object, not a data container -- no cascade needed beyond removing the row. Active conversations referencing this pipeline remain intact (they store `pipeline_id` as a historical reference). |
+
+**2. Tenant isolation rules for model visibility.**
+
+The list query for models uses: `WHERE (tenant_id IS NULL OR tenant_id = :ctx_tenant_id)`. This returns system-wide models (available to all tenants) plus the requesting tenant's private models. A tenant can never see or reference another tenant's private models. When a model is loaded by ID (GET, PATCH, DELETE), the same visibility check applies: `WHERE id = :id AND (tenant_id IS NULL OR tenant_id = :ctx_tenant_id)`.
+
+System-wide models (tenant_id IS NULL) can only be created, modified, or deleted by users with the `platform:admin` permission. This is checked at the service layer, not the router, because it depends on the value of `tenant_id` in the request body.
+
+**3. FK validation on pipeline creation/update.**
+
+When `llm_model_id` is provided in a pipeline create or update:
+- Load the model with the tenant visibility filter (system-wide OR same tenant).
+- Verify `model.type == "llm"` (not "embedding").
+- Verify `model.is_active == True`.
+- If any check fails, return 422 with a descriptive error.
+
+When `collection_ids` is provided:
+- All collection IDs must exist in the `collections` table with `tenant_id = ctx.tenant_id`.
+- All must be active (`is_active = True`).
+- If any check fails, return 422 listing the invalid IDs.
+
+**4. Deletion constraint: model referenced by active pipelines.**
+
+`DELETE /api/v1/models/{id}` checks for active pipelines that reference this model via `llm_model_id`. If any exist, the endpoint returns 409 Conflict with a body listing the pipeline names/IDs that block deletion. The operator must deactivate or reassign those pipelines first. This prevents orphaned pipeline configurations.
+
+Collections also reference `models_registry` via `embedding_model_id`. The same 409 check applies: if any active collection uses this model as its embedding model, deletion is blocked.
+
+**5. Schema design follows existing patterns.**
+
+Pydantic schemas follow the established pattern from `src/api/schemas/collection.py` and `src/api/schemas/tenant.py`:
+- `ModelCreate`, `ModelUpdate`, `ModelResponse`, `ModelListResponse`
+- `PipelineCreate`, `PipelineUpdate`, `PipelineResponse`, `PipelineListResponse`
+- `PromptConfig` and `GuardrailsConfig` as validated Pydantic models for the JSONB fields (analogous to `ChunkConfig` and `ValidationConfig` in collections).
+
+**6. Repository layer follows existing patterns.**
+
+`ModelRepository` is extended (not replaced) with `list_for_tenant`, `create`, `update`, `soft_delete`, `count_referencing_pipelines`, `count_referencing_collections`. A new `PipelineRepository` is created with `list_by_tenant`, `get_by_id`, `create`, `update`, `delete`, `exists_by_name_and_tenant`.
+
+**7. Service layer.**
+
+A new `ModelService` and `PipelineService` are created in `src/domain/`. They orchestrate repository calls, FK validation, tenant isolation checks, and audit logging. Services never call `session.commit()` -- the router owns the transaction boundary (consistent with existing pattern).
+
+**8. Audit logging.**
+
+All write operations (create, update, delete) are audit-logged via `AuditService.log()` with actions: `model.created`, `model.updated`, `model.deleted`, `pipeline.created`, `pipeline.updated`, `pipeline.deleted`. The `details` dict includes the resource name and changed fields but never endpoint URLs or model parameters (defense-in-depth: endpoint URLs are infrastructure secrets).
+
+**Alternatives considered:**
+
+- **Single `/models` endpoint for both registry models and pipelines.** Rejected because models and pipelines have different lifecycles, different tenant isolation rules (nullable vs. required tenant_id), and different FK relationships. Merging them would complicate the API contract and violate single-responsibility.
+
+- **Hard delete for models instead of soft-delete.** Rejected because hard-deleting a model row would violate the FK constraint from `rag_pipelines.llm_model_id` and `collections.embedding_model_id`. Soft-delete (is_active=false) preserves referential integrity while making the model unavailable for new usage.
+
+- **Auto-deactivate pipelines when their model is deleted.** Rejected because it is a surprising side effect. The operator should explicitly decide what to do with affected pipelines. The 409 response makes the dependency visible.
+
+- **Separate `platform:admin` permission for system-wide models as a distinct router.** Rejected because the endpoints are identical in shape; only the authorization check differs based on whether `tenant_id` is NULL. A service-layer check is simpler and avoids route duplication.
+
+**Consequences:**
+
+- New files: `src/api/routers/models.py`, `src/api/routers/pipelines.py`, `src/api/schemas/model.py`, `src/api/schemas/pipeline.py`, `src/domain/model_service.py`, `src/domain/pipeline_service.py`, `src/db/repositories/pipeline_repository.py`.
+- Modified files: `src/db/repositories/model_repository.py` (extended), `src/main.py` (register new routers), `docs/api.md` (add section for pipelines).
+- Test files: `tests/unit/test_models_api.py`, `tests/unit/test_pipelines_api.py`, `tests/unit/test_model_service.py`, `tests/unit/test_pipeline_service.py`, `tests/security/test_models_tenant_isolation.py`, `tests/security/test_pipelines_tenant_isolation.py`.
+- The existing `GET /v1/models` (OpenAI-compatible) in `src/api/routers/chat.py` is NOT changed -- it continues to serve pipelines as "models" for Open WebUI. The new `GET /api/v1/models` is the admin endpoint for the models registry, served under a different prefix.
+- The `stub-rag` fallback in the chat router can be removed once pipelines are seeded via the new API.
+
 ---
 
 ## 13. Security Architecture Summary

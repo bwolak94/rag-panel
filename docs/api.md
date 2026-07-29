@@ -75,9 +75,30 @@ Rozszerzenia w odpowiedzi completions: pole `message_sources` (lista `MessageSou
 |---|---|---|---|
 | GET/POST/PATCH/DELETE | `/users` | `admin:users` | CRUD użytkowników (provisioning przez Keycloak Admin API; tu przypisania ról/kolekcji) |
 | GET/POST/PATCH | `/roles` | `admin:users` | role i ich permissions |
-| GET/POST/PATCH/DELETE | `/models` | `admin:models` | rejestr modeli: nazwa, endpoint, typ (llm/embedding), dozwolone role, limity |
+| GET/POST/PATCH/DELETE | `/models` | GET: `documents:read`; mutacje: `admin:models` | rejestr modeli: nazwa, endpoint, typ (llm/embedding), dozwolone role, limity |
+| GET/POST/PATCH/DELETE | `/pipelines` | GET: `documents:read`; mutacje: `admin:pipelines` | RAG pipelines: nazwa, kolekcje, LLM model, prompt_config, guardrails |
 | GET | `/audit-log` | `admin:audit` | filtr: user, akcja, zakres dat |
 | GET | `/usage` | `admin:audit` | statystyki: zapytania, tokeny, dokumenty per okres |
+
+### Modele (TASK-013)
+
+`GET /models/` — lista modeli widocznych dla tenanta (system-wide: `tenant_id=null` + prywatne tenanta).
+`POST /models/` — tworzy model prywatny tenanta; system-wide modele tworzone przez seed DB.
+`GET /models/{id}` — szczegóły modelu (widoczny = system-wide lub własny tenant).
+`PATCH /models/{id}` — aktualizacja częściowa; 403 dla modeli system-wide; 409 przy dezaktywacji jeśli aktywne pipeline'y.
+`DELETE /models/{id}` — soft-delete (`is_active=False`); 409 jeśli są aktywne pipeline'y odwołujące się do modelu.
+
+Reguły izolacji:
+- `NULL tenant_id` = model system-wide, widoczny dla wszystkich tenantów, niemodyfikowalny przez API.
+- Modele prywatne widoczne/modyfikowalne tylko przez właściciela tenanta.
+
+### Pipeline'y RAG (TASK-013)
+
+`GET /pipelines/` — lista pipeline'ów tenanta.
+`POST /pipelines/` — tworzy pipeline; waliduje `llm_model_id` (musi być typ=`llm`, `is_active=True`, widoczny dla tenanta); 422 przy błędzie.
+`GET /pipelines/{id}` — szczegóły pipeline'u; 404 jeśli inny tenant.
+`PATCH /pipelines/{id}` — aktualizacja częściowa; ponowna walidacja `llm_model_id` jeśli zmieniony.
+`DELETE /pipelines/{id}` — hard-delete (nie soft-delete, per ADR-11).
 
 ## 6. Konwersacje
 
