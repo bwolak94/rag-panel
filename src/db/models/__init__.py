@@ -14,6 +14,8 @@ from src.db.models.permission import Permission, RolePermission, UserRole
 from src.db.models.rag_pipeline import RagPipeline
 from src.db.models.role import Role
 from src.db.models.tenant import Tenant
+from src.db.models.tos_acceptance import TosAcceptance
+from src.db.models.tos_version import TosVersion
 from src.db.models.user import User
 from src.db.models.user_tenant import UserTenant
 
@@ -36,6 +38,8 @@ __all__ = [
     "RolePermission",
     "Tenant",
     "TimestampMixin",
+    "TosAcceptance",
+    "TosVersion",
     "User",
     "UserRole",
     "UserTenant",
