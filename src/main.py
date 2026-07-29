@@ -10,6 +10,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from qdrant_client import AsyncQdrantClient
 
 from src.api.exception_handlers import register_exception_handlers
+from src.api.middleware.tos_check import TosCheckMiddleware
 from src.api.routers import (
     chat,
     collections,
@@ -20,6 +21,7 @@ from src.api.routers import (
     models,
     pipelines,
     tenants,
+    tos,
 )
 from src.api.routers.webhooks import webhook_router
 from src.core.config import settings
@@ -92,6 +94,17 @@ def create_app() -> FastAPI:
     app.include_router(models.router, prefix="/api/v1")   # /api/v1/models
     app.include_router(pipelines.router, prefix="/api/v1")  # /api/v1/pipelines
     app.include_router(webhook_router)  # /internal/minio-webhook
+    app.include_router(tos.router, prefix="/api/v1")  # /api/v1/terms, /api/v1/tenants/.../terms/*
+
+    # ToS check middleware — uses the shared Redis singleton (same pool as routers)
+    from src.core.clients.redis_client import get_redis_client
+    from src.core.database import AsyncSessionLocal
+
+    app.add_middleware(
+        TosCheckMiddleware,
+        redis=get_redis_client(),
+        session_factory=AsyncSessionLocal,
+    )
 
     return app
 
