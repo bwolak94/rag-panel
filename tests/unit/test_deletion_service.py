@@ -151,7 +151,6 @@ async def test_delete_document_success() -> None:
         await svc.delete_document(
             document_id=DOCUMENT_ID,
             ctx=ctx,
-            session=session,
             retrieval_svc=mock_retrieval,
         )
 
@@ -190,7 +189,6 @@ async def test_delete_document_not_found() -> None:
             await svc.delete_document(
                 document_id=DOCUMENT_ID,
                 ctx=ctx,
-                session=session,
                 retrieval_svc=AsyncMock(),
             )
 
@@ -226,7 +224,6 @@ async def test_delete_document_wrong_tenant() -> None:
             await svc.delete_document(
                 document_id=DOCUMENT_ID,
                 ctx=ctx,
-                session=session,
                 retrieval_svc=AsyncMock(),
             )
 
@@ -259,9 +256,7 @@ async def test_delete_document_qdrant_failure_swallowed() -> None:
     session.execute = _execute
 
     mock_retrieval = AsyncMock()
-    mock_retrieval.delete_by_document = AsyncMock(
-        side_effect=QdrantUnavailableError("Qdrant down")
-    )
+    mock_retrieval.delete_by_document = AsyncMock(side_effect=QdrantUnavailableError("Qdrant down"))
 
     mock_tenant_repo = AsyncMock()
     mock_tenant_repo.get_by_id = AsyncMock(return_value=tenant)
@@ -287,7 +282,6 @@ async def test_delete_document_qdrant_failure_swallowed() -> None:
         await svc.delete_document(
             document_id=DOCUMENT_ID,
             ctx=ctx,
-            session=session,
             retrieval_svc=mock_retrieval,
         )
 
@@ -339,7 +333,6 @@ async def test_delete_conversation_success() -> None:
             conversation_id=CONVERSATION_ID,
             user_id=USER_ID,
             ctx=ctx,
-            session=session,
         )
 
     session.delete.assert_called_once_with(conv)
@@ -377,7 +370,6 @@ async def test_delete_conversation_wrong_user() -> None:
                 conversation_id=CONVERSATION_ID,
                 user_id=USER_ID,  # ctx.user_id != conv.user_id
                 ctx=ctx,
-                session=session,
             )
 
 
@@ -407,5 +399,4 @@ async def test_delete_conversation_not_found() -> None:
                 conversation_id=CONVERSATION_ID,
                 user_id=USER_ID,
                 ctx=ctx,
-                session=session,
             )

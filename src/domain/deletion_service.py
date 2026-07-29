@@ -56,7 +56,6 @@ class DeletionService:
         *,
         document_id: uuid.UUID,
         ctx: UserContext,
-        session: AsyncSession,
         retrieval_svc: RetrievalService,
     ) -> None:
         """Hard-delete a document and all associated data (GDPR Art. 17).
@@ -72,7 +71,6 @@ class DeletionService:
         Args:
             document_id: UUID of the document to delete.
             ctx: Authenticated user context from JWT.
-            session: Async DB session (caller manages commit).
             retrieval_svc: RetrievalService instance for Qdrant operations.
 
         Raises:
@@ -80,7 +78,7 @@ class DeletionService:
         """
         # 1. Load document — SQL-scoped to tenant_id to prevent IDOR
         doc = (
-            await session.execute(
+            await self._session.execute(
                 select(Document).where(
                     Document.id == document_id,
                     Document.tenant_id == ctx.tenant_id,
@@ -99,14 +97,14 @@ class DeletionService:
         qdrant_collection: str | None = None
         try:
             collection = (
-                await session.execute(
+                await self._session.execute(
                     select(Collection).where(Collection.id == collection_id)
                 )
             ).scalar_one_or_none()
 
             if collection is not None:
                 model = (
-                    await session.execute(
+                    await self._session.execute(
                         select(ModelsRegistry).where(
                             ModelsRegistry.id == collection.embedding_model_id
                         )
@@ -142,8 +140,8 @@ class DeletionService:
             )
 
         # 3. Hard-delete from Postgres first (chunks_registry cascades via FK)
-        await session.delete(doc)
-        await session.flush()
+        await self._session.delete(doc)
+        await self._session.flush()
 
         logger.info(
             "deletion_service.document_hard_deleted",
@@ -158,9 +156,7 @@ class DeletionService:
                     tenant_id=ctx.tenant_id,
                     allowed_collection_ids=[collection_id],
                 )
-                await retrieval_svc.delete_by_document(
-                    tenant_ctx, qdrant_collection, document_id
-                )
+                await retrieval_svc.delete_by_document(tenant_ctx, qdrant_collection, document_id)
                 logger.info(
                     "deletion_service.qdrant_deleted",
                     document_id=str(document_id),
@@ -210,7 +206,6 @@ class DeletionService:
         conversation_id: uuid.UUID,
         user_id: uuid.UUID,
         ctx: UserContext,
-        session: AsyncSession,
     ) -> None:
         """Hard-delete a conversation and all associated messages (GDPR Art. 17).
 
@@ -221,13 +216,12 @@ class DeletionService:
             conversation_id: UUID of the conversation to delete.
             user_id: Must match conversation.user_id.
             ctx: Authenticated user context from JWT.
-            session: Async DB session (caller manages commit).
 
         Raises:
             NotFoundError: If conversation not found, wrong tenant, or wrong user.
         """
         conv = (
-            await session.execute(
+            await self._session.execute(
                 select(Conversation).where(
                     Conversation.id == conversation_id,
                     Conversation.tenant_id == ctx.tenant_id,
@@ -238,8 +232,8 @@ class DeletionService:
         if conv is None or conv.user_id != user_id:
             raise NotFoundError(f"Conversation {conversation_id} not found")
 
-        await session.delete(conv)
-        await session.flush()
+        await self._session.delete(conv)
+        await self._session.flush()
 
         logger.info(
             "deletion_service.conversation_hard_deleted",

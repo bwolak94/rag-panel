@@ -71,7 +71,6 @@ async def test_delete_document_cross_tenant_returns_404() -> None:
             await svc.delete_document(
                 document_id=DOCUMENT_ID,
                 ctx=ctx,
-                session=session,
                 retrieval_svc=AsyncMock(),
             )
 
@@ -95,13 +94,11 @@ async def test_review_queue_scoped_to_requesting_tenant() -> None:
         patch("src.domain.document_service.AuditService"),
     ):
         svc = DocumentService(session)
-        result = await svc.list_review_queue(
-            ctx, offset=0, limit=20, page=1, page_size=20
-        )
+        docs, total = await svc.list_review_queue(ctx, offset=0, limit=20)
 
     # Verify the repo was queried with TENANT_A's id only
     mock_repo.list_needs_review.assert_called_once_with(TENANT_A, offset=0, limit=20)
-    assert result.total == 0
+    assert total == 0
 
 
 @pytest.mark.tenant_isolation
@@ -134,7 +131,6 @@ async def test_review_approve_cross_tenant_returns_404() -> None:
                 note=None,
                 ctx=ctx,
                 ip=None,
-                session=session,
             )
 
     # Verify scoped by TENANT_A

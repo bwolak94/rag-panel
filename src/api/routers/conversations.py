@@ -194,7 +194,6 @@ async def delete_conversation(
         conversation_id=conversation_id,
         user_id=ctx.user_id,
         ctx=ctx,
-        session=session,
     )
     await session.commit()
     logger.info(

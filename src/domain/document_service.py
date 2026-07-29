@@ -5,15 +5,15 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 
 import structlog
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.schemas.document import (
-    DocumentResponse,
     DocumentUploadRequest,
     DocumentUploadResponse,
-    ReviewQueueResponse,
 )
 from src.core.clients.minio_client import get_minio_client
 from src.core.config import settings
@@ -51,9 +51,7 @@ class DocumentService:
         # 2. SHA-256 dedup within tenant
         existing = await self._repo.check_duplicate(ctx.tenant_id, body.sha256)
         if existing is not None:
-            raise ConflictError(
-                f"Duplicate document. existing_document_id={existing.id}"
-            )
+            raise ConflictError(f"Duplicate document. existing_document_id={existing.id}")
 
         # 3. Compute MinIO key (filename already sanitized by Pydantic validator)
         doc_id = uuid.uuid4()
@@ -82,13 +80,11 @@ class DocumentService:
         ttl_seconds = settings.INGEST_PRESIGNED_URL_TTL_SECONDS
         expires_at = datetime.now(UTC) + timedelta(seconds=ttl_seconds)
 
-        # 6. Generate presigned URL (sync minio-py → run_in_executor)
-        loop = asyncio.get_event_loop()
-        upload_url: str = await loop.run_in_executor(
-            None,
+        # 6. Generate presigned URL (sync minio-py → asyncio.to_thread)
+        upload_url: str = await asyncio.to_thread(
             lambda: get_minio_client().presigned_put_object(
                 bucket, minio_key, expires=timedelta(seconds=ttl_seconds)
-            ),
+            )
         )
 
         # 7. Audit — details contain only IDs and metadata, never file content
@@ -127,9 +123,7 @@ class DocumentService:
         *,
         offset: int,
         limit: int,
-        page: int,
-        page_size: int,
-    ) -> ReviewQueueResponse:
+    ) -> tuple[list[Any], int]:
         """Return paginated documents awaiting admin review for this tenant.
 
         Requires documents:approve permission (enforced at router level).
@@ -139,11 +133,9 @@ class DocumentService:
             ctx: Authenticated user context from JWT.
             offset: Number of records to skip.
             limit: Maximum records per page.
-            page: Current page number (1-based).
-            page_size: Items per page.
 
         Returns:
-            ReviewQueueResponse with items, total, page, page_size.
+            Tuple of (raw Document ORM objects, total count).
         """
         docs, total = await self._repo.list_needs_review(
             ctx.tenant_id,
@@ -151,32 +143,24 @@ class DocumentService:
             limit=limit,
         )
 
-        items = [DocumentResponse.model_validate(d) for d in docs]
-
         logger.info(
             "review_queue_listed",
             tenant_id=str(ctx.tenant_id),
-            count=len(items),
+            count=len(docs),
             total=total,
         )
 
-        return ReviewQueueResponse(
-            items=items,
-            total=total,
-            page=page,
-            page_size=page_size,
-        )
+        return docs, total
 
     async def review_document(
         self,
         *,
         document_id: uuid.UUID,
-        decision: str,
+        decision: Literal["approve", "reject"],
         note: str | None,
         ctx: UserContext,
         ip: str | None,
-        session: AsyncSession,
-    ) -> None:
+    ) -> uuid.UUID | None:
         """Process admin review decision for a needs_review document.
 
         Args:
@@ -185,14 +169,16 @@ class DocumentService:
             note: Optional admin note (not logged for privacy).
             ctx: Authenticated user context from JWT.
             ip: Client IP for audit log.
-            session: Async DB session (caller manages commit).
+
+        Returns:
+            job.id when decision is "approve" (caller dispatches background ingest),
+            None when decision is "reject".
 
         Raises:
             NotFoundError: If document not found or wrong tenant.
-            DomainValidationError: If document is not in needs_review status.
+            DomainValidationError: If document is not in needs_review status or
+                decision is invalid.
         """
-        from sqlalchemy import update as sa_update
-
         from src.db.models.ingestion_job import IngestionJob
 
         doc = await self._repo.get_by_id(document_id, ctx.tenant_id)
@@ -218,18 +204,7 @@ class DocumentService:
             # Retrieve the latest job for this document to resume
             job = await self._repo.get_latest_job(document_id, ctx.tenant_id)
             if job is None:
-                raise NotFoundError(
-                    f"No ingestion job found for document {document_id}"
-                )
-
-            # Resume the ingest pipeline from node_chunk
-            from src.graphs.ingest_graph.graph import resume_ingest_graph
-
-            await resume_ingest_graph(
-                document_id=document_id,
-                job_id=job.id,
-                session=session,
-            )
+                raise NotFoundError(f"No ingestion job found for document {document_id}")
 
             await self._audit.log(
                 ctx=ctx,
@@ -246,6 +221,8 @@ class DocumentService:
                 tenant_id=str(ctx.tenant_id),
             )
 
+            return job.id
+
         elif decision == "reject":
             await self._repo.set_reviewed(
                 document_id,
@@ -258,12 +235,12 @@ class DocumentService:
             # Mark the associated job as completed
             job = await self._repo.get_latest_job(document_id, ctx.tenant_id)
             if job is not None:
-                await session.execute(
+                await self._session.execute(
                     sa_update(IngestionJob)
                     .where(IngestionJob.id == job.id)
                     .values(status="completed")
                 )
-                await session.flush()
+                await self._session.flush()
 
             await self._audit.log(
                 ctx=ctx,
@@ -279,3 +256,8 @@ class DocumentService:
                 document_id=str(document_id),
                 tenant_id=str(ctx.tenant_id),
             )
+
+            return None
+
+        else:
+            raise DomainValidationError(f"Invalid review decision: {decision!r}")

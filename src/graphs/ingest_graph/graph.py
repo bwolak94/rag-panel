@@ -3,7 +3,7 @@
 build_ingest_graph() compiles the 9-node pipeline with optional Postgres checkpointer.
 build_resume_graph() compiles a shortened pipeline (node_chunk → END) for admin-approved docs.
 run_ingest_graph() is the entry point called by EventProcessor (backward-compatible).
-resume_ingest_graph() is called by DocumentService after admin approval.
+resume_ingest_graph() is called by the router background task after admin approval.
 
 Graph topology (fixed — change requires ADR):
     node_fetch → node_extract → node_dedupe →[cond]→ node_validate →[cond]→ node_pii_scan
@@ -38,6 +38,25 @@ from src.graphs.ingest_graph.state import IngestState
 from src.ingest.schemas import IngestEvent
 
 logger = structlog.get_logger(__name__)
+
+
+def _fetch_extracted(minio_client: Any, bucket: str, key: str) -> bytes:
+    """Fetch extracted JSON from MinIO in a thread-safe blocking call.
+
+    Args:
+        minio_client: Synchronous minio-py client instance.
+        bucket: MinIO bucket name.
+        key: Object key to fetch.
+
+    Returns:
+        Raw bytes of the object body.
+    """
+    response = minio_client.get_object(bucket, key)
+    try:
+        return response.read()  # type: ignore[no-any-return]
+    finally:
+        response.close()
+        response.release_conn()
 
 
 def build_ingest_graph(checkpointer: Any = None) -> Any:
@@ -116,7 +135,7 @@ async def run_ingest_graph(
         .where(IngestionJob.id == job_id)
         .values(langgraph_thread_id=thread_id, status="processing")
     )
-    await session.commit()
+    await session.flush()
 
     graph = build_ingest_graph()
 
@@ -186,6 +205,7 @@ def build_resume_graph(checkpointer: Any = None) -> Any:
 async def resume_ingest_graph(
     document_id: uuid.UUID,
     job_id: uuid.UUID,
+    tenant_id: uuid.UUID,
     session: AsyncSession,
 ) -> None:
     """Resume the ingest pipeline from node_chunk after admin approval.
@@ -195,33 +215,44 @@ async def resume_ingest_graph(
     the full text. The extracted_text field will be empty if not cached; node_chunk will
     fall back to concatenating section texts or short-circuit gracefully.
 
-    Runs the chunk→embed→upsert→persist sub-graph. Called by DocumentService after
+    Runs the chunk→embed→upsert→persist sub-graph. Called by router background task after
     admin approval.
 
     Args:
         document_id: The approved document UUID.
         job_id: The IngestionJob UUID (for status updates and thread_id).
-        session: Async DB session (caller-scoped; do NOT commit inside this function).
+        tenant_id: The tenant UUID (used to scope DB queries — prevents cross-tenant access).
+        session: Async DB session (caller-scoped; caller must commit after this returns).
 
     Raises:
-        NotFoundError: If document or job not found.
+        NotFoundError: If document or job not found for the given tenant.
     """
     import json as _json
 
     from src.core.exceptions import NotFoundError
-    from src.db.models.collection import Collection
     from src.db.models.document import Document
     from src.graphs.ingest_graph.state import Section
 
-    # Load document and job
+    # Load document scoped to tenant_id (prevents cross-tenant access)
     doc_row = (
-        await session.execute(select(Document).where(Document.id == document_id))
+        await session.execute(
+            select(Document).where(
+                Document.id == document_id,
+                Document.tenant_id == tenant_id,
+            )
+        )
     ).scalar_one_or_none()
     if doc_row is None:
         raise NotFoundError(f"Document {document_id} not found")
 
+    # Load job scoped to tenant_id
     job_row = (
-        await session.execute(select(IngestionJob).where(IngestionJob.id == job_id))
+        await session.execute(
+            select(IngestionJob).where(
+                IngestionJob.id == job_id,
+                IngestionJob.tenant_id == tenant_id,
+            )
+        )
     ).scalar_one_or_none()
     if job_row is None:
         raise NotFoundError(f"Job {job_id} not found")
@@ -240,9 +271,7 @@ async def resume_ingest_graph(
     extracted_text: str = ""
     sections: list[Section] = []
     try:
-
-        response = await asyncio.to_thread(minio.get_object, bucket, extracted_key)
-        raw_data = response.read()
+        raw_data: bytes = await asyncio.to_thread(_fetch_extracted, minio, bucket, extracted_key)
         raw_sections: list[dict[str, Any]] = _json.loads(raw_data)
         # node_extract saves: [{section_index, page, heading}] — text is not persisted
         # Build Section objects from metadata; text will be empty (re-chunked from raw)
@@ -276,20 +305,18 @@ async def resume_ingest_graph(
     )
     await session.flush()
 
-    collection_row = (
-        await session.execute(
-            select(Collection).where(Collection.id == doc_row.collection_id)
-        )
-    ).scalar_one_or_none()
-    _ = collection_row  # used for context; IngestState handles collection_id
-
     validation_result = None
     if doc_row.validation_result is not None:
         from src.graphs.ingest_graph.state import ValidationResult
 
         try:
             validation_result = ValidationResult.model_validate(doc_row.validation_result)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "resume_ingest_graph.validation_result_parse_failed",
+                document_id=str(document_id),
+                error=str(exc),
+            )
             validation_result = None
 
     initial_state = IngestState(

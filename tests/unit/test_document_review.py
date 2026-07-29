@@ -73,7 +73,6 @@ def _make_job() -> MagicMock:
 @pytest.mark.asyncio
 async def test_list_review_queue_returns_needs_review_docs() -> None:
     """list_review_queue returns only needs_review documents for the tenant."""
-    from src.api.schemas.document import DocumentResponse
     from src.domain.document_service import DocumentService
 
     doc = _make_doc(status="needs_review")
@@ -82,45 +81,17 @@ async def test_list_review_queue_returns_needs_review_docs() -> None:
 
     session = MagicMock()
 
-    # Build a real DocumentResponse from the mock doc (all fields are set on _make_doc)
-    doc_response = DocumentResponse(
-        id=doc.id,
-        tenant_id=doc.tenant_id,
-        collection_id=doc.collection_id,
-        title=doc.title,
-        original_filename=doc.original_filename,
-        mime_type=doc.mime_type,
-        size_bytes=doc.size_bytes,
-        sha256=doc.sha256,
-        status=doc.status,
-        category=None,
-        tags=[],
-        language=None,
-        uploaded_by=doc.uploaded_by,
-        validation_result=None,
-        created_at=doc.created_at,
-        updated_at=doc.updated_at,
-    )
-
     with (
         patch("src.domain.document_service.DocumentRepository", return_value=mock_repo),
         patch("src.domain.document_service.TenantRepository"),
         patch("src.domain.document_service.AuditService"),
-        patch("src.domain.document_service.DocumentResponse") as mock_resp_cls,
     ):
-        mock_resp_cls.model_validate = MagicMock(return_value=doc_response)
-        mock_resp_cls.return_value = doc_response
-
         svc = DocumentService(session)
         ctx = _make_ctx()
-        result = await svc.list_review_queue(
-            ctx, offset=0, limit=20, page=1, page_size=20
-        )
+        docs, total = await svc.list_review_queue(ctx, offset=0, limit=20)
 
-    assert result.total == 1
-    assert result.page == 1
-    assert result.page_size == 20
-    assert len(result.items) == 1
+    assert total == 1
+    assert len(docs) == 1
     mock_repo.list_needs_review.assert_called_once_with(TENANT_ID, offset=0, limit=20)
 
 
@@ -129,7 +100,7 @@ async def test_list_review_queue_returns_needs_review_docs() -> None:
 
 @pytest.mark.asyncio
 async def test_review_approve_transitions_status() -> None:
-    """Approving a needs_review doc transitions it to 'indexing' and resumes graph."""
+    """Approving a needs_review doc transitions it to 'indexing' and returns job_id."""
     from src.domain.document_service import DocumentService
 
     doc = _make_doc(status="needs_review")
@@ -153,36 +124,17 @@ async def test_review_approve_transitions_status() -> None:
         patch("src.domain.document_service.DocumentRepository", return_value=mock_repo),
         patch("src.domain.document_service.TenantRepository"),
         patch("src.domain.document_service.AuditService", return_value=mock_audit),
-        patch("src.graphs.ingest_graph.graph.resume_ingest_graph", new_callable=AsyncMock),
     ):
-        # resume_ingest_graph is imported locally inside review_document — patch the source
-        with patch(
-            "src.graphs.ingest_graph.graph.build_resume_graph"
-        ), patch(
-            "src.domain.document_service.DocumentService.review_document",
-            wraps=None,
-        ):
-            pass
+        svc = DocumentService(session)
+        job_id = await svc.review_document(
+            document_id=DOCUMENT_ID,
+            decision="approve",
+            note=None,
+            ctx=ctx,
+            ip="127.0.0.1",
+        )
 
-        # Patch the local import inside the method body
-        import src.graphs.ingest_graph.graph as graph_module
-
-        original_resume = graph_module.resume_ingest_graph
-        mock_resume = AsyncMock()
-        graph_module.resume_ingest_graph = mock_resume  # type: ignore[assignment]
-        try:
-            svc = DocumentService(session)
-            await svc.review_document(
-                document_id=DOCUMENT_ID,
-                decision="approve",
-                note=None,
-                ctx=ctx,
-                ip="127.0.0.1",
-                session=session,
-            )
-        finally:
-            graph_module.resume_ingest_graph = original_resume  # type: ignore[assignment]
-
+    assert job_id == JOB_ID
     mock_repo.set_reviewed.assert_called_once_with(
         DOCUMENT_ID,
         TENANT_ID,
@@ -222,15 +174,15 @@ async def test_review_reject_transitions_status() -> None:
         patch("src.domain.document_service.AuditService", return_value=mock_audit),
     ):
         svc = DocumentService(session)
-        await svc.review_document(
+        result = await svc.review_document(
             document_id=DOCUMENT_ID,
             decision="reject",
             note="Rejected by admin",
             ctx=ctx,
             ip="127.0.0.1",
-            session=session,
         )
 
+    assert result is None
     mock_repo.set_reviewed.assert_called_once_with(
         DOCUMENT_ID,
         TENANT_ID,
@@ -271,7 +223,6 @@ async def test_review_document_not_needs_review_returns_422() -> None:
                 note=None,
                 ctx=ctx,
                 ip=None,
-                session=session,
             )
 
 
@@ -300,5 +251,68 @@ async def test_review_document_wrong_tenant_returns_404() -> None:
                 note=None,
                 ctx=ctx,
                 ip=None,
-                session=session,
             )
+
+
+# ── HTTP-level permission tests ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_review_queue_requires_approve_permission() -> None:
+    """GET /api/v1/documents/review-queue without documents:approve → 403."""
+    from httpx import ASGITransport, AsyncClient
+
+    from src.api.dependencies.auth import get_current_ctx
+    from src.main import create_app
+
+    ctx_no_approve = UserContext(
+        user_id=USER_ID,
+        keycloak_sub="kc-viewer",
+        email="viewer@example.com",
+        display_name="Viewer",
+        tenant_id=TENANT_ID,
+        roles=frozenset({"viewer"}),
+        permissions=frozenset({"documents:read"}),  # no documents:approve
+        allowed_collection_ids=frozenset({COLLECTION_ID}),
+        writable_collection_ids=frozenset(),
+    )
+
+    app = create_app()
+    app.dependency_overrides[get_current_ctx] = lambda: ctx_no_approve
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/v1/documents/review-queue")
+
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_post_review_requires_approve_permission() -> None:
+    """POST /api/v1/documents/{id}/review without documents:approve → 403."""
+    from httpx import ASGITransport, AsyncClient
+
+    from src.api.dependencies.auth import get_current_ctx
+    from src.main import create_app
+
+    ctx_no_approve = UserContext(
+        user_id=USER_ID,
+        keycloak_sub="kc-viewer",
+        email="viewer@example.com",
+        display_name="Viewer",
+        tenant_id=TENANT_ID,
+        roles=frozenset({"viewer"}),
+        permissions=frozenset({"documents:read"}),  # no documents:approve
+        allowed_collection_ids=frozenset({COLLECTION_ID}),
+        writable_collection_ids=frozenset(),
+    )
+
+    app = create_app()
+    app.dependency_overrides[get_current_ctx] = lambda: ctx_no_approve
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            f"/api/v1/documents/{DOCUMENT_ID}/review",
+            json={"decision": "approve"},
+        )
+
+    assert resp.status_code == 403
