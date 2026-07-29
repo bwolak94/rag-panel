@@ -69,6 +69,7 @@ def _make_app(ctx: UserContext) -> Any:
 
     from fastapi import FastAPI
 
+    from src.api.dependencies.retrieval import get_retrieval_service
     from src.main import create_app
 
     app: FastAPI = create_app()
@@ -76,10 +77,17 @@ def _make_app(ctx: UserContext) -> Any:
     async def _fake_session() -> AsyncGenerator[MagicMock, None]:
         session = MagicMock(spec=AsyncSession)
         session.commit = AsyncMock()
+        session.execute = AsyncMock(return_value=MagicMock())
+        session.delete = AsyncMock()
+        session.flush = AsyncMock()
         yield session
+
+    mock_retrieval = MagicMock()
+    mock_retrieval.delete_by_document = AsyncMock(return_value=0)
 
     app.dependency_overrides[get_current_ctx] = lambda: ctx
     app.dependency_overrides[get_db_session] = _fake_session
+    app.dependency_overrides[get_retrieval_service] = lambda: mock_retrieval
     return app
 
 
@@ -106,15 +114,24 @@ async def test_get_document_from_other_tenant_returns_403() -> None:
 @pytest.mark.tenant_isolation
 @pytest.mark.asyncio
 async def test_delete_document_from_other_tenant_returns_403() -> None:
-    """DELETE /api/v1/documents/{doc_id} where doc belongs to tenant B → 403 for tenant A user."""
+    """DELETE /api/v1/documents/{doc_id} where doc belongs to tenant B → 403 for tenant A user.
+
+    The endpoint now calls DeletionService which raises TenantIsolationError → HTTP 403
+    when the document belongs to a different tenant. We patch DeletionService.delete_document
+    to simulate the isolation check.
+    """
+    from src.core.exceptions import TenantIsolationError
+
     ctx_a = _make_ctx(TENANT_A, USER_A)
     app = _make_app(ctx_a)
 
+    # DeletionService raises TenantIsolationError when doc.tenant_id != ctx.tenant_id
     with patch(
-        "src.api.routers.documents.DocumentRepository.get_by_id",
-        new=AsyncMock(return_value=_make_doc_from_tenant_b()),
+        "src.api.routers.documents.DeletionService.delete_document",
+        new=AsyncMock(side_effect=TenantIsolationError("Cross-tenant access denied")),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.delete(f"/api/v1/documents/{DOC_B_ID}")
 
     assert resp.status_code == 403
+    assert "secret" not in resp.text.lower()

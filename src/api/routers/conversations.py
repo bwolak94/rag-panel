@@ -35,8 +35,8 @@ from src.core.database import get_db_session
 from src.db.models.conversation import Conversation
 from src.db.models.message import Message, MessageSource
 from src.db.models.rag_pipeline import RagPipeline
-from src.domain.audit_service import AuditService
 from src.domain.auth import UserContext
+from src.domain.deletion_service import DeletionService
 
 logger = structlog.get_logger(__name__)
 
@@ -181,7 +181,7 @@ async def get_conversation(
 @router.delete(
     "/{conversation_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Soft-delete a conversation (audit log written)",
+    summary="Hard-delete a conversation and all messages (GDPR Art. 17)",
 )
 async def delete_conversation(
     conversation_id: uuid.UUID,
@@ -190,29 +190,15 @@ async def delete_conversation(
     _: Annotated[None, Depends(_require_chat)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> None:
-    # NOTE: scoped to tenant_id to prevent IDOR timing attacks
-    conv = await session.scalar(
-        select(Conversation).where(
-            Conversation.id == conversation_id,
-            Conversation.tenant_id == ctx.tenant_id,
-        )
-    )
-    if conv is None or conv.user_id != ctx.user_id or conv.is_deleted:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "CONVERSATION_NOT_FOUND"},
-        )
-
-    conv.is_deleted = True
-
-    ip = request.client.host if request.client else None
-    await AuditService(session).log(
+    await DeletionService(session).delete_conversation(
+        conversation_id=conversation_id,
+        user_id=ctx.user_id,
         ctx=ctx,
-        action="conversation.deleted",
-        resource_type="conversation",
-        resource_id=conversation_id,
-        details={},
-        ip=ip,
     )
     await session.commit()
-    logger.info("conversation_deleted", conversation_id=str(conversation_id))
+    logger.info(
+        "conversation_deleted",
+        conversation_id=str(conversation_id),
+        tenant_id=str(ctx.tenant_id),
+        user_id=str(ctx.user_id),
+    )

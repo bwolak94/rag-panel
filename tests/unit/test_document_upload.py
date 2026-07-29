@@ -165,7 +165,8 @@ async def test_upload_duplicate_sha256_returns_409() -> None:
             resp = await c.post("/api/v1/documents", json=_VALID_UPLOAD_BODY)
 
     assert resp.status_code == 409
-    assert "existing_document_id" in resp.json()["detail"]
+    # Generic conflict message — must NOT expose existing_document_id (oracle prevention)
+    assert resp.json()["detail"] == "Resource conflict"
 
 
 @pytest.mark.asyncio

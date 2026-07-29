@@ -105,6 +105,22 @@ class DocumentListResponse(BaseModel):
     page_size: int
 
 
+class ReviewDecision(BaseModel):
+    """Request body for admin document review decision."""
+
+    decision: Literal["approve", "reject"]
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ReviewQueueResponse(BaseModel):
+    """Paginated list of documents awaiting admin review."""
+
+    items: list[DocumentResponse]
+    total: int
+    page: int
+    page_size: int
+
+
 class MinIOWebhookEvent(BaseModel):
     """
     Schema for MinIO bucket notification. MinIO sends this as POST JSON.
