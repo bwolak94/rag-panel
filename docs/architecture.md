@@ -1629,3 +1629,727 @@ Not changed:
 - `src/retrieval/service.py` -- already has the required `delete_by_document` and `delete_by_tenant` methods.
 - `src/db/models/chunks_registry.py` -- no schema change; no `collection_id` column added.
 - `src/graphs/ingest_graph/graph.py` -- the existing `build_ingest_graph(checkpointer)` is reused as-is for resume; a new `resume_ingest_graph()` helper function is added alongside `run_ingest_graph()` to encapsulate the checkpoint-loading and re-invocation logic.
+
+---
+
+## ADRs -- Batch Improvements 2026-07
+
+The following ADRs (013--027) cover planned improvements and new features for the platform. They were evaluated as a batch to ensure cross-cutting concerns (tenant isolation, GDPR, operational cost) are addressed consistently.
+
+---
+
+### ADR-013: Hybrid Search -- BM25 + Dense Vector with Reciprocal Rank Fusion
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+Dense vector search alone struggles with keyword-heavy medical queries (drug names, ICD codes, exact regulation numbers). Section 19 already anticipates hybrid retrieval. Qdrant natively supports sparse vectors alongside dense vectors in the same collection, enabling BM25-style lexical search without a separate index. Reciprocal Rank Fusion (RRF) is a well-understood, parameter-light fusion strategy.
+
+**Decision:**
+
+1. **Sparse vectors via Qdrant named vectors.** Each Qdrant collection gains a second named vector `sparse` alongside the existing dense vector. Sparse vectors are generated at ingest time using a SPLADE or BM25 encoder running on-prem (same GPU host). The encoder is registered in `models_registry` with `type=sparse_encoder`.
+
+2. **Dual query in RetrievalService.** `RetrievalService.search()` gains an optional `sparse_vector` parameter. When provided, it executes two Qdrant queries (dense + sparse) in parallel using `asyncio.gather`, each with the same mandatory tenant+collection filter. Results are fused using RRF with `k=60` (standard constant). The fused list is truncated to `top_k`.
+
+3. **RRF implementation in `src/retrieval/fusion.py`.** Pure function `rrf_fuse(dense_results, sparse_results, k=60) -> list[RetrievalResult]`. No external dependency. Deterministic output for deterministic input (stable sort on tied scores by point_id).
+
+4. **Sparse vector generation at ingest.** The `node_embed` ingest graph node is extended to also compute sparse vectors using the collection's configured sparse encoder. Both vectors are upserted in the same Qdrant point. This ensures atomic presence of both vector types.
+
+5. **Feature flag.** Hybrid search is enabled per pipeline via `rag_pipelines.prompt_config.hybrid_search: bool` (default `false`). When disabled, behavior is identical to current dense-only search.
+
+6. **Collection migration.** Existing collections must be recreated with the named-vectors config. A migration script re-indexes affected collections. New collections created after this ADR automatically include the sparse vector config in `ensure_collection()`.
+
+**Tenant isolation impact:** No change. Both dense and sparse queries use the same mandatory `tenant_id` + `collection_id` filter. The filter is applied identically in both queries before fusion.
+
+**GDPR impact:** Sparse vectors encode term frequencies, not reconstructable text. No additional PII risk beyond what dense vectors already carry.
+
+**Alternatives considered:**
+- **Elasticsearch/OpenSearch for BM25:** Rejected. Adds an entire new infrastructure component to operate on-prem. Qdrant sparse vectors provide equivalent functionality within the existing stack.
+- **Weighted linear combination instead of RRF:** Rejected. Requires tuning a weight parameter per domain. RRF is rank-based and works well without tuning.
+- **Full-text index in Postgres (tsvector):** Rejected. Does not scale to the same chunk volumes as Qdrant and would introduce a third query path outside RetrievalService.
+
+**Consequences:**
+- New file: `src/retrieval/fusion.py`.
+- Modified: `src/retrieval/service.py` (dual query path), `src/retrieval/service.py::ensure_collection` (named vectors config), `src/graphs/ingest_graph/nodes/node_embed.py` (sparse encoding), `src/core/config.py` (sparse encoder settings).
+- New dependency: sparse encoding library (e.g., `fastembed` for SPLADE or custom BM25 tokenizer). Must be justified in PR.
+- Re-index required for existing collections.
+
+**Agents:** `rag-engineer` (fusion logic, node_embed changes), `backend-dev` (RetrievalService dual-query), `data-engineer` (migration script for collection recreation), `security-auditor` (tenant isolation check on dual-query path).
+
+---
+
+### ADR-014: Cross-Encoder Reranker Node in Query Graph
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+The existing `src/retrieval/reranker.py` is a no-op placeholder (returns results unchanged). Cross-encoder reranking between `retrieve` and `grade_documents` significantly improves precision by rescoring (query, chunk) pairs with a more expressive model. This is especially valuable in the medical domain where subtle semantic differences matter (e.g., "dosage for children" vs. "dosage for adults").
+
+**Decision:**
+
+1. **New query graph node `node_rerank`.** Inserted between `retrieve` and `grade_documents` in the query graph topology. Receives `retrieved_chunks` and `rewritten_query` from state, outputs re-scored and re-ordered `retrieved_chunks`.
+
+2. **Cross-encoder model.** A cross-encoder model (e.g., `cross-encoder/ms-marco-MiniLM-L-6-v2` or a multilingual variant) is registered in `models_registry` with `type=reranker`. It runs on the GPU host via a lightweight HTTP server (using the `sentence-transformers` serve endpoint or a custom FastAPI wrapper exposing an OpenAI-compatible rerank endpoint).
+
+3. **Reranker invocation in `src/retrieval/reranker.py`.** Replace the no-op with a real implementation. The reranker calls the model endpoint via `httpx.AsyncClient`, sends `(query, chunk_text)` pairs, receives relevance scores, and re-sorts results. Top-N filtering (configurable, default N = top_k from pipeline config) after reranking trims low-relevance results.
+
+4. **Reranker is optional.** Configured per pipeline via `rag_pipelines.prompt_config.reranker_model_id: UUID | null`. When null, `node_rerank` passes through unchanged (no-op). When set, it must reference a `models_registry` entry with `type=reranker`.
+
+5. **Timeout and retry.** Reranker calls follow the LLM timeout policy from section 16 (connect 5s, read 30s, 2 retries). On failure after retries, `node_rerank` logs a warning and passes through unreranked results (graceful degradation, not a hard failure).
+
+**Tenant isolation impact:** None. Reranking operates on chunks already filtered by tenant in the retrieve step. Chunk text is sent to the on-prem reranker model only -- it never leaves the infrastructure.
+
+**GDPR impact:** Chunk text is sent to the on-prem reranker endpoint. Since the reranker runs within the same private network as the LLM, this is consistent with existing data handling (chunks are already sent to the LLM for grading and generation). No new data flow crosses trust boundaries. Langfuse tracing for this node records only `chunks_reranked_count` and `reranker_model`, never chunk text.
+
+**Alternatives considered:**
+- **Reranking inside RetrievalService (not as a graph node):** Rejected. Reranking is a query-time concern with its own latency budget and failure mode. Placing it as a graph node gives independent tracing, retry, and feature-flag control.
+- **LLM-based reranking (using the generate model):** Rejected. LLM reranking is 10-100x slower than a cross-encoder and consumes generation-model capacity. Cross-encoders are purpose-built for pairwise relevance scoring.
+- **Cohere Rerank API:** Rejected. Violates on-prem constraint. Data would leave the infrastructure.
+
+**Consequences:**
+- New file: `src/graphs/query_graph/nodes/node_rerank.py`.
+- Modified: `src/graphs/query_graph/graph.py` (insert node), `src/retrieval/reranker.py` (real implementation), `src/graphs/query_graph/state.py` (no schema change needed -- reranker updates `retrieved_chunks` in-place before grading).
+- Section 7 topology diagram must be updated to include `node_rerank` between `retrieve` and `grade_documents`.
+- New dependency: `httpx` (already present) for reranker HTTP calls. Model serving on GPU host requires deployment configuration.
+
+**Agents:** `rag-engineer` (node_rerank, graph wiring), `backend-dev` (reranker.py real implementation), `ml-engineer` (model selection, serving setup), `security-auditor` (verify chunk text stays on-prem).
+
+---
+
+### ADR-015: Adaptive Chunking -- Per-Document-Type Strategy
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+The current chunking node uses a single recursive strategy (512 tokens, overlap 64) for all document types. Medical documents have diverse structures: PDFs with hierarchical sections and headers, tables with drug interactions or lab reference ranges, clinical notes with terse sentence-level information. A one-size-fits-all strategy produces chunks that split tables mid-row or merge unrelated sections.
+
+The `collections.chunk_config` JSONB field already exists (ADR-5, data model) and stores `strategy`, `chunk_size`, `chunk_overlap`. This ADR extends it to support per-document-type overrides.
+
+**Decision:**
+
+1. **Extended `chunk_config` schema.** The `ChunkConfig` Pydantic model gains an optional `type_overrides: dict[str, ChunkStrategyConfig]` field. Keys are document type labels as assigned by `node_validate` (e.g., `medical_pdf`, `table`, `clinical_note`, `regulation`). Values override the default strategy for that type.
+
+```python
+class ChunkStrategyConfig(BaseModel):
+    strategy: Literal["recursive", "section_aware", "row_level", "sentence"]
+    chunk_size: int = 512
+    chunk_overlap: int = 64
+    separator_pattern: str | None = None  # regex for section_aware
+
+class ChunkConfig(BaseModel):
+    default: ChunkStrategyConfig = ChunkStrategyConfig()
+    type_overrides: dict[str, ChunkStrategyConfig] = {}
+```
+
+2. **Strategy implementations.** The ingest graph `node_chunk` resolves the strategy by looking up `validation_result.category` in `chunk_config.type_overrides`, falling back to `chunk_config.default`. Strategy implementations:
+   - `recursive`: Existing `RecursiveCharacterTextSplitter` from LangChain.
+   - `section_aware`: Splits on detected section headers (from `extracted_sections` produced by Docling), then applies recursive splitting within each section. Preserves section metadata per chunk.
+   - `row_level`: For table documents. Each row (or group of rows up to `chunk_size`) becomes a chunk. Column headers are prepended to each chunk for context.
+   - `sentence`: Splits on sentence boundaries (regex or spaCy). Suitable for clinical notes where each sentence may be independently meaningful.
+
+3. **Strategy registry in `src/ingest/chunking.py`.** A mapping `STRATEGY_REGISTRY: dict[str, Callable]` maps strategy names to splitter factory functions. New strategies are added by registering a new entry. The `node_chunk` node calls `STRATEGY_REGISTRY[strategy_name]` to get the appropriate splitter.
+
+**Tenant isolation impact:** None. Chunking operates on already-extracted text within a single document's ingest pipeline. The `tenant_id` and `collection_id` are propagated unchanged to each produced chunk.
+
+**GDPR impact:** None beyond existing. Chunk text is the same content regardless of chunking strategy. PII detection (`node_pii_scan`) runs before chunking.
+
+**Alternatives considered:**
+- **LLM-based semantic chunking:** Rejected for MVP. Adds an LLM call per document during ingest, increasing cost and latency. Can be added as a future strategy in the registry.
+- **Single configurable strategy with many parameters:** Rejected. Different document types need fundamentally different splitting logic (row-based vs. sentence-based), not just different parameters to the same algorithm.
+
+**Consequences:**
+- Modified: `src/api/schemas/collection.py` (extended `ChunkConfig`), `src/graphs/ingest_graph/nodes/node_chunk.py` (strategy dispatch), `src/ingest/chunking.py` (strategy registry and implementations).
+- New strategies must have unit tests with fixture documents of each type.
+- Existing collections with `chunk_config` containing only `strategy`/`chunk_size`/`chunk_overlap` remain valid (backward compatible via defaults).
+
+**Agents:** `rag-engineer` (strategy implementations, node_chunk dispatch), `data-engineer` (ChunkConfig schema migration if needed), `backend-dev` (API schema update).
+
+---
+
+### ADR-016: Full Langfuse Tracing for All Graph Nodes
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+ADR-010 established the tracing pattern (`@observe` with `capture_input=False, capture_output=False`) and applied it to the query graph. The ingest graph and any future graphs need the same treatment. Section 17 defines the span hierarchy for both graphs but ingest graph tracing is noted as "deferred" in ADR-010.
+
+**Decision:**
+
+1. **Apply `@observe` to all ingest graph nodes.** Each node in `src/graphs/ingest_graph/nodes/` gets the same decorator pattern as query graph nodes: `@observe(name="<node_name>", capture_input=False, capture_output=False)` with explicit GDPR-safe metadata via `langfuse_context.update_current_observation()`.
+
+2. **Root trace for ingest.** `run_ingest_graph()` (and `resume_ingest_graph()`) are decorated with `@observe(name="ingest_graph", capture_input=False, capture_output=False)`. The trace is tagged with `tenant_id`, `document_id`, `collection_id`, and `job_id` as metadata. Span hierarchy matches section 17.
+
+3. **Safe metadata per node.** Each ingest node records only: step name, latency, counts (page_count, chunk_count, point_count), model names, boolean flags (pii_found, is_duplicate), confidence scores. Never: extracted text, chunk text, file content, PII flag details.
+
+4. **Worker initialization.** The ingest worker process calls `initialize_langfuse(settings)` at startup and `shutdown_langfuse()` at shutdown, identical to the API process. If Langfuse is unconfigured, decorators are noops.
+
+**Tenant isolation impact:** None. Langfuse traces are tagged with `tenant_id` for filtering in dashboards but Langfuse itself is a shared observability tool, not a data store with tenant isolation requirements. No document content reaches Langfuse.
+
+**GDPR impact:** Addressed by the `capture_input=False, capture_output=False` pattern. The same defense-in-depth approach from ADR-010 applies.
+
+**Alternatives considered:**
+- **Tracing only the root ingest function, not individual nodes:** Rejected. Per-node tracing is essential for diagnosing which ingest step is slow or failing. A single span would hide the bottleneck.
+
+**Consequences:**
+- Modified: all files in `src/graphs/ingest_graph/nodes/`, `src/graphs/ingest_graph/graph.py`, `src/ingest/worker.py` (initialization).
+- Section 17 ingest span hierarchy becomes the implementation spec.
+- No new dependencies.
+
+**Agents:** `backend-dev` (decorator application to all ingest nodes), `security-auditor` (verify no content leaks to Langfuse).
+
+---
+
+### ADR-017: Structured Output in Guardrails Node
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+The `node_guardrails_output` node is currently rule-based (string matching, regex). ADR-009 decision 11 describes it as checking `pipeline.guardrails` for disclaimer addition and prompt injection leakage. For production use, more sophisticated checks (factual grounding, hallucination detection, toxicity) require LLM assistance. Using LLM JSON mode (structured output) ensures the guardrails response is machine-parseable without fragile string parsing.
+
+**Decision:**
+
+1. **LLM-based guardrails with JSON mode.** When `pipeline.guardrails.llm_check: true` (new config flag), the guardrails node calls the LLM with `response_format={"type": "json_object"}` and a structured prompt that returns:
+
+```json
+{
+  "safe": true,
+  "modifications": [],
+  "disclaimer_added": true,
+  "pii_detected": false,
+  "reasoning": "..."
+}
+```
+
+2. **Prompt in `src/graphs/prompts/guardrails_output_v2.md`.** The prompt instructs the LLM to evaluate the answer against the retrieved context for factual grounding, check for PII leakage, and determine if a domain disclaimer is needed. The `reasoning` field is recorded only in debug mode (never in production Langfuse traces).
+
+3. **Fallback to rule-based.** When `pipeline.guardrails.llm_check` is false or absent, the existing rule-based logic remains active. The LLM-based check is additive, not a replacement.
+
+4. **Timeout budget.** The guardrails LLM call has a reduced timeout (30s instead of 120s for generation) because the input is smaller (just the answer, not full context). On timeout, fall back to rule-based guardrails and log a warning.
+
+**Tenant isolation impact:** None. The guardrails node operates on the answer already generated for a specific tenant's query. No cross-tenant data.
+
+**GDPR impact:** The answer text (which may contain information derived from medical documents) is sent to the on-prem LLM for evaluation. This is consistent with the existing generate step where the same LLM sees the full context. The `reasoning` field is never recorded in Langfuse.
+
+**Alternatives considered:**
+- **External guardrails service (Guardrails AI, NeMo Guardrails):** Rejected. Adds infrastructure and violates on-prem simplicity. The LLM JSON mode approach requires no new components.
+- **Always-on LLM guardrails:** Rejected. Doubles LLM calls for every query. The feature flag allows tenants to opt in based on their risk profile.
+
+**Consequences:**
+- Modified: `src/graphs/query_graph/nodes/node_guardrails_output.py`, `src/api/schemas/pipeline.py` (`GuardrailsConfig` extended).
+- New prompt: `src/graphs/prompts/guardrails_output_v2.md`.
+- Additional LLM latency (~2-5s) when enabled. Documented in pipeline configuration guidance.
+
+**Agents:** `rag-engineer` (prompt, node logic), `backend-dev` (GuardrailsConfig schema), `security-auditor` (verify reasoning field is not logged).
+
+---
+
+### ADR-018: Score Threshold Auto-Calibration
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+The retrieval `score_threshold` is currently a static value (0.35 default, per ADR-009 decision 10) set in `rag_pipelines.prompt_config`. This value was chosen for BGE-M3 cosine similarity, but different embedding models produce different score distributions. When a collection uses a different model, the static threshold may be too aggressive (filtering out relevant chunks) or too permissive (admitting noise). Manual tuning per model is error-prone and does not adapt to corpus characteristics.
+
+**Decision:**
+
+1. **Calibration via eval baselines.** After the RAGAS evaluation suite (ADR-027) runs, the calibration script analyzes the score distributions of relevant vs. irrelevant chunks across the eval dataset. It computes an optimal threshold as the score that maximizes F1 on the eval set (or a configurable metric).
+
+2. **Storage in `models_registry`.** The `models_registry` table gains a `calibration` JSONB column. For embedding models, this stores `{"score_threshold": 0.38, "calibrated_at": "2026-...", "eval_dataset_hash": "..."}`. The calibration data is per-model, not per-collection, because the score distribution is primarily a function of the embedding model.
+
+3. **RetrievalService reads calibrated threshold.** When `score_threshold` is not explicitly set in the pipeline config (or is set to the sentinel value `"auto"`), `RetrievalService.search()` reads the calibrated threshold from the embedding model's `calibration` field. If no calibration exists, it falls back to the hardcoded default (0.35).
+
+4. **Calibration script as CLI command.** `python -m src.scripts.calibrate_threshold --model-id <uuid> --eval-dir tests/eval/` runs the calibration, writes results to `models_registry.calibration`, and logs the before/after threshold with the F1 delta.
+
+**Tenant isolation impact:** Calibration data is per-model (global or tenant-scoped per `models_registry.tenant_id`). A tenant's private embedding model gets its own calibration. System-wide models share calibration across tenants, which is correct because the model behavior is identical regardless of tenant.
+
+**GDPR impact:** The calibration script processes eval datasets (synthetic, not real patient data). The stored calibration contains only numeric thresholds and metadata hashes, no content.
+
+**Alternatives considered:**
+- **Per-query dynamic threshold (based on score distribution of returned results):** Rejected. Introduces non-determinism and makes debugging harder. A pre-computed threshold provides consistent behavior.
+- **Threshold stored per collection:** Rejected. The score distribution depends on the embedding model, not the corpus. Per-collection storage would require redundant calibration runs.
+
+**Consequences:**
+- New file: `src/scripts/calibrate_threshold.py`.
+- Migration: add `calibration JSONB` column to `models_registry`.
+- Modified: `src/retrieval/service.py` (read calibrated threshold), `src/db/models/models_registry.py` (new column).
+- Requires ADR-027 (RAGAS eval) to be implemented first for the eval dataset.
+
+**Agents:** `ml-engineer` (calibration algorithm), `data-engineer` (migration), `backend-dev` (RetrievalService threshold resolution), `rag-engineer` (integration with eval pipeline).
+
+---
+
+### ADR-019: Prompt A/B Testing with Shadow Mode
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+Prompt changes (classification, rewriting, generation) can significantly impact answer quality. Currently, deploying a new prompt version is all-or-nothing. There is no mechanism to compare two prompt versions on live traffic before committing to one.
+
+**Decision:**
+
+1. **Shadow mode per pipeline.** `rag_pipelines.prompt_config` gains an `ab_test` field:
+
+```python
+class ABTestConfig(BaseModel):
+    enabled: bool = False
+    shadow_prompt_version: str  # e.g., "generate_v3"
+    target_node: str  # e.g., "generate"
+    traffic_pct: float = 0.1  # 10% of queries run shadow
+    metrics_tag: str = "ab_test_gen_v3"
+```
+
+2. **Shadow execution.** When A/B testing is enabled for a pipeline, the target node runs both the primary and shadow prompt versions. The primary result is always returned to the user. The shadow result is discarded after metrics are recorded. Shadow execution runs concurrently with the primary (via `asyncio.gather`) to minimize added latency.
+
+3. **Metrics recording in Langfuse.** Both runs are recorded as separate spans within the same trace. The shadow span is tagged with `ab_test=true` and the `metrics_tag`. This allows filtering and comparison in Langfuse dashboards: response quality scores, token usage, latency.
+
+4. **Feature flag granularity.** A/B testing is per-pipeline, which means per-tenant (since pipelines are tenant-scoped). A tenant admin enables it; other tenants are unaffected.
+
+5. **No user-facing impact.** The shadow result is never shown to the user. The user always receives the primary prompt's output. This makes the feature safe to enable in production.
+
+6. **Automatic comparison report.** A CLI script `python -m src.scripts.ab_report --tag <metrics_tag>` queries Langfuse for traces with the tag and produces a comparison report (avg token usage, avg latency, faithfulness/relevance scores if eval annotations are present).
+
+**Tenant isolation impact:** Shadow execution uses the same tenant-scoped context as the primary execution. No cross-tenant data. The shadow prompt version must be accessible to the tenant (stored in `src/graphs/prompts/`).
+
+**GDPR impact:** Shadow execution sends the same query and chunks to the same on-prem LLM. The shadow response is not persisted in Postgres (no `Message` row). Langfuse records only metadata (latency, tokens), not content, per ADR-010. The shadow response is discarded in-memory after metric extraction.
+
+**Alternatives considered:**
+- **Traffic splitting (50/50 with different users seeing different results):** Rejected. Too risky for medical domain -- inconsistent answers to identical queries would erode trust. Shadow mode ensures all users see the proven prompt.
+- **Offline evaluation only (no live traffic):** Rejected. Eval datasets are synthetic; live traffic reveals real-world query patterns that eval misses.
+- **Feature flag service (LaunchDarkly, Flagsmith):** Rejected. Adds external dependency. The pipeline config is sufficient for per-tenant gating.
+
+**Consequences:**
+- New file: `src/graphs/query_graph/shadow.py` (shadow execution orchestrator).
+- Modified: target node files (e.g., `node_generate.py`) to accept prompt version override, `src/api/schemas/pipeline.py` (ABTestConfig).
+- New script: `src/scripts/ab_report.py`.
+- Additional LLM cost: shadow execution consumes tokens. The `traffic_pct` field limits this.
+
+**Agents:** `rag-engineer` (shadow execution logic, prompt versioning), `backend-dev` (pipeline schema, graph wiring), `ml-engineer` (comparison metrics).
+
+---
+
+### ADR-020: Shared Public Collections
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+Multiple tenants (medical clinics) need access to the same reference materials: ICD-11 classification, pharmacopoeia, clinical guidelines. Currently, each tenant must independently upload and index these documents, wasting storage and ingest compute. A shared "public" collection would deduplicate this content while maintaining tenant isolation for queries.
+
+**Decision:**
+
+1. **System-owned collections.** A new collection ownership model: `collections.tenant_id` can be NULL, indicating a system-wide (public) collection. Public collections are managed by `platform:admin` only. They appear in every tenant's available collections when the tenant opts in.
+
+2. **Tenant opt-in via `collection_access`.** A public collection is not automatically visible to all tenants. The platform admin grants access by creating `collection_access` entries linking the public `collection_id` to tenant-specific roles. This reuses the existing RBAC mechanism without changes.
+
+3. **Qdrant payload: `tenant_id = "__public__"`.** Points in public collections use a sentinel `tenant_id` value of `"__public__"` instead of a real tenant UUID. This preserves the mandatory `tenant_id` payload field (no null values in Qdrant payload indexes).
+
+4. **RetrievalService filter modification.** The mandatory filter changes from:
+   ```
+   tenant_id == ctx.tenant_id AND collection_id IN allowed_ids
+   ```
+   to:
+   ```
+   (tenant_id == ctx.tenant_id OR tenant_id == "__public__") AND collection_id IN allowed_ids
+   ```
+   The `allowed_ids` list already includes only collections the user has access to (from `collection_access`). Since public collections must be explicitly granted, the `OR` clause does not leak data -- a user without access to a public collection will not have its ID in `allowed_ids`, so the `collection_id IN` filter blocks it regardless of the `tenant_id` match.
+
+5. **Ingest for public collections.** Public collection documents are ingested through the standard pipeline but with `tenant_id = "__public__"` in the MinIO path (bucket `tenant-__public__`) and Qdrant payload. The ingest worker validates that the uploading user has `platform:admin` permission.
+
+6. **Deletion of public collections.** Governed by `platform:admin`. GDPR Art. 17 does not apply to public reference materials (they are not personal data), but `DeletionService` handles them identically for operational consistency.
+
+**Tenant isolation impact:** This is the most significant isolation change in this batch. The core invariant remains: a user can only see chunks whose `collection_id` is in their `allowed_collection_ids`. The `OR tenant_id == "__public__"` clause is safe because it is AND-ed with the collection filter. The risk vector is: if a bug in `collection_access` grants a tenant access to a private collection of another tenant, the `__public__` OR clause does not make this worse (the bug would already allow access via `collection_id IN`). Defense: `tenant_isolation` tests must be extended to cover the `__public__` sentinel value.
+
+**GDPR impact:** Public collections contain reference materials (ICD-11, pharmacopoeia), not personal data. No GDPR risk from sharing. However, the `__public__` bucket in MinIO must not be used for tenant-specific uploads -- enforced by the ingest worker's permission check.
+
+**Alternatives considered:**
+- **Copy-on-reference (each tenant gets a clone):** Rejected. Wastes storage and compute. N tenants x M documents = N*M copies in Qdrant.
+- **Separate Qdrant collection for public data:** Rejected. Would require RetrievalService to query two collections and merge results, adding complexity. The payload filter approach keeps a single query path.
+- **`tenant_id = NULL` in Qdrant:** Rejected. Qdrant payload indexes do not support null values well. A sentinel string is safer for filtering.
+
+**Consequences:**
+- Migration: `collections.tenant_id` becomes nullable (new Alembic migration).
+- Modified: `src/retrieval/filters.py` (add `__public__` OR clause), `src/retrieval/service.py` (no change if filter builder is updated), `src/domain/collection_service.py` (support NULL tenant_id for creation by platform:admin), `src/api/routers/collections.py` (permission check for public collections).
+- New tests: `tests/security/test_public_collection_isolation.py` -- verifies that a tenant without `collection_access` to a public collection cannot retrieve its chunks.
+- MinIO: create `tenant-__public__` bucket during system initialization.
+
+**Agents:** `architect` (this ADR), `backend-dev` (filter change, collection service), `data-engineer` (migration), `security-auditor` (tenant isolation tests, filter review), `rag-engineer` (ingest changes for public tenant).
+
+---
+
+### ADR-021: Token Budget and Early Stopping in Generate Node
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+The `node_generate` node currently sends all `graded_chunks` as context to the LLM. For queries that retrieve many relevant chunks (e.g., broad medical topics), the context can exceed the model's context window or produce unnecessarily long and costly prompts. There is no mechanism to prioritize which chunks to include when the token budget is limited.
+
+**Decision:**
+
+1. **Token budget parameter.** `rag_pipelines.prompt_config` gains `max_context_tokens: int` (default 3072). This defines the maximum tokens allocated to chunk context in the generation prompt. System prompt, user question, and conversation history consume a separate budget.
+
+2. **Budget allocation in `node_generate`.** Before constructing the prompt, the node:
+   a. Counts tokens for the system prompt + user question + conversation history using `tiktoken`.
+   b. Computes remaining budget: `max_context_tokens - overhead`.
+   c. Iterates through `graded_chunks` (already sorted by score descending) and includes chunks until the budget is exhausted.
+   d. Chunks that do not fit are dropped with a log entry (debug level, no content logged -- only chunk_id and score).
+
+3. **Early stopping signal.** If zero chunks fit within the budget (extremely unlikely but possible with very long system prompts), the node routes to the "not found" path rather than generating without context.
+
+4. **Budget metadata in state.** `QueryState` gains `context_tokens_used: int` and `chunks_included: int` fields for observability. These are recorded in the Langfuse span for the generate node.
+
+**Tenant isolation impact:** None. Budget control operates on chunks already filtered by tenant.
+
+**GDPR impact:** None. Token counting uses `tiktoken` locally. No content is sent externally for counting.
+
+**Alternatives considered:**
+- **Summarization of excess chunks:** Rejected for MVP. Adds an LLM call and latency. Budget-based truncation is simpler and deterministic.
+- **Dynamic context window based on model:** Considered and partially adopted. The `max_context_tokens` default should be set per model in `models_registry.params` for models with different context windows. The pipeline config overrides it.
+
+**Consequences:**
+- Modified: `src/graphs/query_graph/nodes/node_generate.py` (budget logic), `src/graphs/query_graph/state.py` (new fields), `src/api/schemas/pipeline.py` (PromptConfig extended).
+- `tiktoken` is already a dependency.
+
+**Agents:** `rag-engineer` (budget logic in node_generate), `backend-dev` (schema changes).
+
+---
+
+### ADR-022: Import-Layer Enforcement via import-linter in CI
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+The coding standards mandate `api -> domain -> core` layering and forbid importing from `api` into `domain/core`. The security rules require that `qdrant_client` is only imported in `src/retrieval/`. Currently, these rules are enforced by code review only. An automated CI check prevents violations from being merged.
+
+**Decision:**
+
+1. **`import-linter` as a dev dependency.** Add `import-linter>=2.0` to `pyproject.toml` dev dependencies.
+
+2. **Configuration in `pyproject.toml`.**
+
+```toml
+[tool.importlinter]
+root_packages = ["src"]
+
+[[tool.importlinter.contracts]]
+name = "Layered architecture"
+type = "layers"
+layers = ["src.api", "src.domain", "src.core"]
+
+[[tool.importlinter.contracts]]
+name = "Qdrant isolation"
+type = "forbidden"
+source_modules = [
+    "src.api",
+    "src.domain",
+    "src.core",
+    "src.graphs",
+    "src.ingest",
+    "src.db",
+]
+forbidden_modules = ["qdrant_client"]
+
+[[tool.importlinter.contracts]]
+name = "Retrieval allowed Qdrant"
+type = "independence"
+# This contract is intentionally NOT applied to src.retrieval
+```
+
+3. **CI step.** `lint-imports` runs after `ruff check` and before `mypy` in the CI pipeline. Failure blocks merge.
+
+4. **Existing violations.** Any existing violations must be fixed before this check is enabled. A sweep of the codebase is required.
+
+**Tenant isolation impact:** Indirect but positive. The Qdrant isolation contract ensures that no new code path can bypass `RetrievalService` and its mandatory tenant filter.
+
+**GDPR impact:** None directly. The import linter is a development tool.
+
+**Alternatives considered:**
+- **Custom pytest test scanning AST for imports:** Already exists as `test_no_direct_qdrant_import_outside_retrieval`. The import-linter provides a more comprehensive and maintainable solution that also covers the layer architecture, not just Qdrant.
+- **archunit-python:** Less mature than import-linter. Fewer configuration options for Python-specific patterns.
+
+**Consequences:**
+- New dev dependency: `import-linter>=2.0`.
+- Modified: `pyproject.toml` (dependency + configuration), CI pipeline (new step).
+- One-time sweep to fix any existing violations.
+
+**Agents:** `backend-dev` (configuration, violation fixes), `microservices` (CI pipeline update).
+
+---
+
+### ADR-023: Graph RAG -- Entity Extraction and Knowledge Graph
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+Medical documents contain structured relationships between entities: drugs interact with other drugs, conditions are treated by procedures, procedures reference ICD codes. Vector similarity alone cannot answer multi-hop questions like "What drugs interact with medications prescribed for condition X?" because the answer spans multiple chunks that may not be semantically similar to the query.
+
+Section 19 anticipates a knowledge graph addition. This ADR specifies the approach.
+
+**Decision:**
+
+1. **Entity extraction during ingest.** A new ingest graph node `node_extract_entities` is inserted after `node_chunk` and before `node_embed`. It uses an LLM call (with structured JSON output) to extract entities and relationships from each chunk:
+   - Entity types: `Drug`, `Condition`, `Procedure`, `ICD_Code`, `Lab_Test`, `Anatomy`.
+   - Relationship types: `TREATS`, `INTERACTS_WITH`, `CONTRAINDICATED_FOR`, `DIAGNOSES`, `REFERENCES`.
+   - Each entity has a canonical name (normalized) and aliases.
+
+2. **Storage in Postgres (not a separate graph database).** Entities and relationships are stored in two new tables: `entities` (id, tenant_id, canonical_name, entity_type, aliases JSONB, source_chunk_ids JSONB) and `entity_relationships` (id, tenant_id, source_entity_id, target_entity_id, relationship_type, confidence, source_chunk_ids JSONB). Both tables have `tenant_id` for isolation.
+
+   Rationale for Postgres over Neo4j: the expected graph size per tenant (tens of thousands of entities, not millions) does not justify a separate graph database. Postgres recursive CTEs handle multi-hop traversals up to 3-4 hops efficiently. Adding Neo4j doubles the operational burden on-prem.
+
+3. **Multi-hop query node `node_graph_retrieve`.** A new query graph node inserted after `node_retrieve` (or as a parallel path). When the intent classifier detects a multi-hop or relationship question, `node_graph_retrieve`:
+   a. Extracts entity mentions from the query using the same LLM extraction prompt.
+   b. Looks up entities in the `entities` table (fuzzy match on canonical_name/aliases).
+   c. Traverses `entity_relationships` up to 2 hops using a recursive CTE.
+   d. Retrieves the `source_chunk_ids` from the traversal results.
+   e. Fetches those chunks from Qdrant by point ID (still via RetrievalService, still with tenant filter).
+   f. Merges graph-retrieved chunks with vector-retrieved chunks (union, deduplicated by point_id).
+
+4. **Entity deduplication.** When a new chunk produces an entity whose canonical name matches an existing entity (same tenant, same type), the existing entity is updated (source_chunk_ids extended, aliases merged) rather than creating a duplicate. Matching uses case-insensitive exact match on canonical_name within the tenant.
+
+5. **Graph data is tenant-scoped.** `entities.tenant_id` and `entity_relationships.tenant_id` enforce isolation. The recursive CTE always includes `WHERE tenant_id = :tenant_id`. Entities from public collections use `tenant_id = "__public__"` (consistent with ADR-020).
+
+**Tenant isolation impact:** High. Two new tables with `tenant_id`. The recursive CTE must always filter by `tenant_id` -- this is a merge-blocking test. Entity extraction for public collections uses the `__public__` sentinel. Cross-tenant entity leakage would be a severe vulnerability in a medical context.
+
+**GDPR impact:** Entity data (drug names, condition names) may constitute medical metadata but not personal data (no patient identifiers). However, if a clinical note mentions a patient name as an entity, the extraction prompt must be instructed to skip person names. The extraction prompt includes: "Do not extract person names, dates of birth, or patient identifiers as entities." DeletionService must cascade to `entities` and `entity_relationships` when a document is deleted.
+
+**Alternatives considered:**
+- **Neo4j / Apache AGE:** Rejected for MVP. Operational cost of running a graph database on-prem. Postgres recursive CTEs are sufficient for the expected scale. Migration path exists if graph complexity grows.
+- **Entity extraction at query time only:** Rejected. Too slow (LLM call per query for extraction). Pre-extracting during ingest amortizes the cost.
+- **Storing entities in Qdrant payload:** Rejected. Qdrant is not designed for graph traversal. The relationships would not be queryable.
+
+**Consequences:**
+- New tables: `entities`, `entity_relationships` (Alembic migration).
+- New files: `src/graphs/ingest_graph/nodes/node_extract_entities.py`, `src/graphs/query_graph/nodes/node_graph_retrieve.py`, `src/db/models/entity.py`, `src/db/repositories/entity_repository.py`.
+- Modified: `src/graphs/ingest_graph/graph.py` (new node), `src/graphs/query_graph/graph.py` (conditional parallel path), `src/domain/deletion_service.py` (cascade to entities).
+- New prompt: `src/graphs/prompts/extract_entities_v1.md`.
+- Significant LLM cost increase during ingest (one extraction call per chunk). Mitigated by batching chunks in a single extraction call where possible.
+- Entity extraction is optional per collection via `collections.chunk_config.extract_entities: bool` (default false).
+
+**Agents:** `rag-engineer` (extraction prompt, graph traversal node), `data-engineer` (entity tables, migration), `backend-dev` (repository, service layer), `ml-engineer` (entity normalization), `security-auditor` (tenant isolation on entity tables).
+
+---
+
+### ADR-024: Document Versioning (VersionRAG)
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+Medical procedures, drug formularies, and clinical guidelines are updated periodically. The current system treats each upload as a new document. There is no mechanism to track that "Procedure_v2.pdf" supersedes "Procedure_v1.pdf", and queries may return outdated chunks alongside current ones. Users need answers based on the latest version, with the ability to query historical versions for audit or comparison.
+
+**Decision:**
+
+1. **Version chain in Postgres.** The `documents` table gains two new columns:
+   - `version_group_id UUID` -- shared by all versions of the same logical document. Defaults to the document's own `id` for unversioned documents.
+   - `version_number INT` -- auto-incremented within the version group. The first upload is version 1.
+   - A unique constraint on `(tenant_id, version_group_id, version_number)` prevents duplicates.
+
+2. **Version detection.** When uploading, the user can optionally specify `version_of: UUID` (the `document_id` of the previous version). If provided:
+   a. The new document inherits the `version_group_id` from the referenced document.
+   b. `version_number` is set to max(version_number within group) + 1.
+   c. The previous version's `is_current` flag is set to `false`.
+   d. The new document's `is_current` flag is set to `true`.
+   If `version_of` is not provided, the document starts a new version group.
+
+3. **Qdrant payload: `version_group_id` and `is_current`.** Each chunk point includes `version_group_id` and `is_current` in its payload. This enables version-aware retrieval without a Postgres join at query time.
+
+4. **Query graph version filter.** By default, `RetrievalService.search()` adds `is_current == true` to the Qdrant filter. This ensures queries return only the latest version. A pipeline config flag `include_historical_versions: bool = false` overrides this to include all versions (useful for audit or comparison queries).
+
+5. **Version promotion on ingest completion.** The `is_current` flag update (both in Postgres and Qdrant) happens atomically in the `persist_status` ingest node:
+   a. Update the old version's Qdrant points: set `is_current = false` in payload (via `RetrievalService.update_payload`).
+   b. The new version's points are already upserted with `is_current = true`.
+   c. Update the old version's Postgres row: `is_current = false`.
+   This ensures that during ingest, the old version remains current until the new version is fully indexed.
+
+6. **Deletion cascade.** Deleting a document deletes only that version. If it is the current version, the previous version is promoted to current (if one exists). Deleting all versions in a group removes the entire chain.
+
+**Tenant isolation impact:** `version_group_id` is scoped by `tenant_id` (the unique constraint includes `tenant_id`). A tenant cannot reference another tenant's document as `version_of`.
+
+**GDPR impact:** Document versioning increases data retention (old versions are kept). GDPR compliance requires that deletion of a document version removes its chunks from Qdrant and its file from MinIO. The `DeletionService` already handles this per-document. Retention policies per tenant may need to auto-expire old versions (future enhancement).
+
+**Alternatives considered:**
+- **Replace-in-place (delete old, upload new):** Rejected. Loses version history needed for medical audit trails ("what did the procedure say on date X?").
+- **Version metadata only in Postgres (no Qdrant payload):** Rejected. Would require a Postgres query before every Qdrant search to resolve current document IDs, adding latency and complexity.
+- **Git-style diff storage:** Rejected. Over-engineered for document-level versioning. Full document copies are simpler and storage is cheap.
+
+**Consequences:**
+- Migration: add `version_group_id`, `version_number`, `is_current` to `documents` table.
+- Modified: `src/db/models/document.py`, `src/api/schemas/document.py` (upload schema gains `version_of`), `src/domain/document_service.py` (version chain logic), `src/retrieval/filters.py` (add `is_current` filter), `src/graphs/ingest_graph/nodes/node_persist.py` (version promotion), `src/domain/deletion_service.py` (version chain cleanup).
+- New method: `RetrievalService.update_payload()` for updating payload fields on existing points (needed for `is_current` flag changes).
+- Qdrant payload index on `is_current` (keyword) and `version_group_id` (keyword) in `ensure_collection`.
+
+**Agents:** `data-engineer` (migration, document model), `backend-dev` (version chain logic, API schema), `rag-engineer` (ingest node changes, retrieval filter), `security-auditor` (tenant isolation on version references).
+
+---
+
+### ADR-025: Multi-Modal Ingestion -- Vision Model for Images and Tables in PDFs
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+Medical PDFs frequently contain images (anatomical diagrams, X-ray references), charts, and complex tables that Docling extracts as raw text poorly or not at all. A vision-capable model (e.g., LLaVA, Qwen-VL, or a multimodal variant available through vLLM) can generate text descriptions of these visual elements, making them searchable alongside native text chunks.
+
+**Decision:**
+
+1. **New ingest graph node `node_vision_extract`.** Inserted after `node_extract_text` and before `node_dedupe_check`. It processes the `extracted_sections` list and identifies sections tagged by Docling as `image`, `figure`, `table_image`, or `chart`. For each, it:
+   a. Extracts the image/region from the raw PDF bytes.
+   b. Sends it to the vision model endpoint with a structured prompt: "Describe this medical image/table in detail, preserving all data values and labels."
+   c. Stores the generated description in a new `vision_description` field on the section.
+
+2. **Vision model in `models_registry`.** Registered with `type=vision`. The collection config gains `vision_model_id: UUID | None`. When null, `node_vision_extract` is skipped (no-op).
+
+3. **Chunking of vision descriptions.** Vision descriptions are chunked alongside native text sections. Each chunk derived from a vision description carries `source_type: "vision"` in its Qdrant payload, enabling filtering or boosting in retrieval.
+
+4. **Image storage.** Extracted images are stored in MinIO under `processed/{document_id}/images/{section_index}.png`. The chunk payload includes `image_minio_key` for potential future display in citations.
+
+5. **Vision model timeout.** Image processing is slow (5-15s per image). The timeout for vision model calls is 60s per image, 2 retries. Total per-document limit: 20 images (configurable). Documents exceeding this limit process only the first 20 images and log a warning.
+
+**Tenant isolation impact:** Images are stored in the tenant's MinIO bucket (`tenant-{slug}/processed/...`). Vision descriptions are chunked and stored in Qdrant with the same `tenant_id` payload as all other chunks. No new isolation concerns.
+
+**GDPR impact:** Medical images may contain patient data (X-ray metadata, embedded patient names in DICOM headers). The `node_pii_scan` runs after vision extraction and should scan vision descriptions for PII. Image files in MinIO are subject to the same deletion cascade as other document artifacts.
+
+**Alternatives considered:**
+- **OCR only (Tesseract):** Insufficient. OCR handles text in images but cannot describe charts, diagrams, or anatomical illustrations.
+- **External vision API (GPT-4V, Gemini):** Rejected. Violates on-prem constraint. Medical images must not leave the infrastructure.
+- **Table extraction via dedicated table parser (Camelot, Tabula):** Complementary, not a replacement. These tools handle structured tables well but cannot handle figures or charts. The vision model approach is more general. Table parsers can be added as a secondary strategy in the chunking registry (ADR-015).
+
+**Consequences:**
+- New file: `src/graphs/ingest_graph/nodes/node_vision_extract.py`.
+- Modified: `src/graphs/ingest_graph/graph.py` (insert node), `src/graphs/ingest_graph/state.py` (vision_descriptions field), `src/api/schemas/collection.py` (vision_model_id in collection config).
+- New prompt: `src/graphs/prompts/vision_extract_v1.md`.
+- GPU requirement: vision models require significant VRAM (7B model needs ~14GB). May require a separate GPU or time-sharing with the LLM.
+- New dependency: PDF image extraction library (e.g., `pymupdf` for page rendering). Must be justified in PR.
+
+**Agents:** `rag-engineer` (vision node, prompt), `ml-engineer` (vision model selection and serving), `backend-dev` (collection schema, MinIO image storage), `data-engineer` (state schema), `security-auditor` (PII in images, DICOM metadata stripping).
+
+---
+
+### ADR-026: Agentic Multi-Hop Research Mode
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+Complex medical questions sometimes require iterative reasoning: "What are the contraindications of Drug A for patients with Condition B who are also taking Drug C?" A single retrieve-then-generate pass may not surface all relevant information because the initial query does not capture all sub-questions. An agentic loop that retrieves, reasons about what is missing, and retrieves again can answer such questions more completely.
+
+**Decision:**
+
+1. **Secondary LangGraph topology.** A new graph `research_graph` in `src/graphs/research_graph/` with an iterative loop:
+   ```
+   decompose_question -> [retrieve -> reason -> decide] (loop, max N steps) -> synthesize -> guardrails_output
+   ```
+   - `decompose_question`: Breaks the user question into sub-questions.
+   - `retrieve`: Standard retrieval via RetrievalService (same tenant filter).
+   - `reason`: LLM analyzes retrieved chunks and determines what information is still missing.
+   - `decide`: Routes to another `retrieve` iteration (with a refined sub-question) or to `synthesize` if sufficient information is gathered.
+   - `synthesize`: Generates a comprehensive answer from all gathered evidence.
+
+2. **Step budget.** `rag_pipelines.prompt_config.research_max_steps: int` (default 5, max 10). Each retrieve-reason-decide cycle is one step. The `decide` node always routes to `synthesize` when the step budget is exhausted, preventing unbounded loops.
+
+3. **Activation.** Research mode is activated per pipeline via `rag_pipelines.prompt_config.research_mode: bool = false`. When enabled, `classify_intent` routes complex/multi-hop questions to `research_graph` instead of the standard query graph. Simple questions still use the standard graph.
+
+4. **Intent classification extension.** `node_classify_intent` gains a new intent value: `multi_hop`. The routing function in `graph.py` checks: if intent is `multi_hop` and research mode is enabled, invoke `research_graph`; otherwise, proceed with the standard topology.
+
+5. **State accumulation.** `ResearchState` extends `QueryState` with `sub_questions: list[str]`, `evidence: list[EvidenceItem]` (chunk + sub-question it answers), `steps_taken: int`, `remaining_gaps: list[str]`.
+
+6. **Cost control.** Research mode makes multiple LLM calls (decompose + N*(retrieve+reason+decide) + synthesize). Token usage is tracked per step. A per-query token budget (`research_max_tokens: int`, default 10000) terminates the loop early if exceeded.
+
+**Tenant isolation impact:** Each retrieve call goes through RetrievalService with the same tenant context. The iterative nature does not change the isolation model -- it is equivalent to multiple sequential queries.
+
+**GDPR impact:** Multiple LLM calls per query increase the volume of data processed by the on-prem model but do not change the trust boundary. All processing stays on-prem. Langfuse traces record step counts and token usage per step, not content.
+
+**Alternatives considered:**
+- **Hardcoded 2-pass retrieval (refine_query from ADR-009):** Insufficient for true multi-hop. The deferred `refine_query` is a single retry, not an iterative reasoning loop.
+- **External agent framework (AutoGPT, CrewAI):** Rejected. Adds heavyweight dependencies and loss of control over the execution loop. LangGraph's native looping support is sufficient and maintains consistency with the existing architecture.
+- **Always-on research mode:** Rejected. The extra LLM calls add 5-30s of latency and 3-10x token cost. Must be opt-in per pipeline.
+
+**Consequences:**
+- New directory: `src/graphs/research_graph/` with `state.py`, `graph.py`, `nodes/` (node_decompose, node_reason, node_decide, node_synthesize).
+- Modified: `src/graphs/query_graph/graph.py` (routing to research_graph), `src/graphs/query_graph/nodes/node_classify_intent.py` (multi_hop intent).
+- New prompts: `decompose_question_v1.md`, `reason_v1.md`, `decide_v1.md`, `synthesize_v1.md` in `src/graphs/prompts/`.
+- Significant latency and cost increase when active. Must be clearly documented in pipeline configuration guidance.
+
+**Agents:** `rag-engineer` (graph design, prompts, nodes), `backend-dev` (pipeline schema, routing), `ml-engineer` (prompt tuning for decompose/reason), `security-auditor` (verify tenant isolation across iterative retrievals).
+
+---
+
+### ADR-027: Automated RAGAS Evaluation in CI
+
+**Status:** Proposed
+**Date:** 2026-07-30
+
+**Context:**
+`rag-conventions.md` requires that every prompt/retrieval/chunking change triggers evaluation tests with 50 standard questions + 20 trap questions, and that a faithfulness/relevance regression greater than 5% blocks merge. Currently, no automated evaluation pipeline exists. The `tests/eval/` directory is empty.
+
+**Decision:**
+
+1. **Eval dataset format.** Evaluation datasets are stored in `tests/eval/datasets/` as JSON files:
+
+```json
+{
+  "dataset_version": "1.0",
+  "questions": [
+    {
+      "id": "q001",
+      "question": "...",
+      "expected_answer": "...",
+      "expected_source_doc_ids": ["..."],
+      "category": "standard|trap",
+      "domain": "medical_procedures|pharmacology|..."
+    }
+  ]
+}
+```
+
+Trap questions are queries that should be answered with "not found in documents" -- testing the system's refusal capability.
+
+2. **RAGAS metrics.** The eval pipeline computes:
+   - `faithfulness`: Is the answer grounded in the retrieved context? (RAGAS metric)
+   - `answer_relevancy`: Does the answer address the question? (RAGAS metric)
+   - `context_precision`: Are the retrieved chunks relevant? (RAGAS metric)
+   - `context_recall`: Were all necessary chunks retrieved? (RAGAS metric)
+   - `trap_refusal_rate`: Percentage of trap questions correctly refused (custom metric).
+
+3. **Baseline storage.** After each successful eval run on the main branch, the metric results are saved to `tests/eval/baselines/baseline_latest.json`. PR evaluation compares against this baseline.
+
+4. **CI integration.** A new CI job `eval-rag` runs when files matching `src/graphs/prompts/**`, `src/graphs/*/nodes/**`, `src/retrieval/**`, `src/ingest/chunking.py` are changed. The job:
+   a. Spins up testcontainers (Postgres, Qdrant, Redis).
+   b. Seeds the eval dataset documents into Qdrant via the ingest pipeline.
+   c. Runs each eval question through `invoke_query_graph()`.
+   d. Computes RAGAS metrics.
+   e. Compares against baseline.
+   f. Posts a PR comment with the metric comparison table.
+   g. Fails the job if any metric regresses by more than 5%.
+
+5. **LLM for evaluation.** RAGAS requires an LLM judge for faithfulness/relevancy scoring. The eval job uses the same on-prem LLM configured via `LLM_BASE_URL`. If the LLM is unavailable (CI without GPU), the job is skipped with a warning (not a failure).
+
+6. **Eval dataset is synthetic.** The eval dataset contains synthetic medical questions, not real patient queries. It is committed to the repository. No GDPR concerns.
+
+**Tenant isolation impact:** The eval pipeline creates a dedicated test tenant for each run. All eval data is scoped to this tenant. The test tenant is deleted after the run.
+
+**GDPR impact:** None. Eval data is synthetic. No real patient data is used in CI.
+
+**Alternatives considered:**
+- **Manual evaluation after deployment:** Rejected. Does not prevent regressions from being merged. Automated CI evaluation is the only reliable gate.
+- **RAGAS cloud service:** Rejected. Eval data must stay on-prem. RAGAS is an open-source library that runs locally.
+- **Custom eval metrics without RAGAS:** Rejected. RAGAS provides well-validated metrics that are standard in the RAG community. Reimplementing them adds maintenance burden without benefit.
+- **Running eval on every commit (not just prompt/retrieval changes):** Rejected. Eval is slow (minutes per run with LLM calls). Limiting to relevant file changes keeps CI fast for unrelated PRs.
+
+**Consequences:**
+- New dependency: `ragas>=0.2` in dev dependencies.
+- New files: `tests/eval/conftest.py`, `tests/eval/test_rag_quality.py`, `tests/eval/datasets/medical_v1.json`, `tests/eval/baselines/baseline_latest.json`, `tests/eval/metrics.py` (custom trap_refusal_rate metric).
+- CI pipeline: new job `eval-rag` with conditional trigger on file paths.
+- Baseline must be generated from the current main branch before the first gated run.
+- GPU/LLM availability in CI is a prerequisite. If CI runs on CPU-only nodes, the eval job is skipped (acceptable for MVP; dedicated CI GPU is a Phase 3 investment).
+
+**Agents:** `rag-engineer` (eval dataset creation, RAGAS integration), `ml-engineer` (metric selection, baseline generation), `backend-dev` (CI pipeline configuration), `security-auditor` (verify eval data contains no real PII).

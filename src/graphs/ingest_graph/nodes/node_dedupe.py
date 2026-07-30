@@ -13,9 +13,11 @@ from __future__ import annotations
 from typing import Any
 
 import structlog
+from langfuse import observe
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.db.models.document import Document
 from src.graphs.ingest_graph.helpers import update_step, utcnow
 from src.graphs.ingest_graph.state import IngestState
@@ -23,6 +25,7 @@ from src.graphs.ingest_graph.state import IngestState
 logger = structlog.get_logger(__name__)
 
 
+@observe(name="node_dedupe", capture_input=False, capture_output=False)
 async def node_dedupe(state: IngestState, config: dict[str, Any]) -> dict[str, Any]:
     """Check (tenant_id, sha256) for duplicates; halt on match.
 
@@ -66,6 +69,15 @@ async def node_dedupe(state: IngestState, config: dict[str, Any]) -> dict[str, A
             started_at=step_start,
             meta={"result": "duplicate", "existing_document_id": str(existing_id)},
         )
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "result": "duplicate",
+                # existing_document_id is an internal UUID — not PII
+                "existing_document_id": str(existing_id),
+            }
+        )
         logger.info(
             "node_dedupe_duplicate_found",
             document_id=str(state.document_id),
@@ -80,5 +92,12 @@ async def node_dedupe(state: IngestState, config: dict[str, Any]) -> dict[str, A
         status="completed",
         started_at=step_start,
         meta={"result": "unique"},
+    )
+    _lf_update_span(
+        metadata={
+            "document_id": str(state.document_id),
+            "tenant_id": str(state.tenant_id),
+            "result": "unique",
+        }
     )
     return {}

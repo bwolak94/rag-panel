@@ -17,9 +17,11 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar, Protocol
 
 import structlog
+from langfuse import observe
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.db.models.document import Document
 from src.db.models.ingestion_job import IngestionJob
 from src.graphs.ingest_graph.helpers import get_collection, update_step, utcnow
@@ -77,6 +79,7 @@ class DefaultPIIScanner:
 _DEFAULT_SCANNER = DefaultPIIScanner()
 
 
+@observe(name="node_pii_scan", capture_input=False, capture_output=False)
 async def node_pii_scan(
     state: IngestState,
     config: dict[str, Any],
@@ -103,6 +106,8 @@ async def node_pii_scan(
     collection = await get_collection(session, state.collection_id)
     pii_action = (collection.validation_config or {}).get("pii_action", "review")
 
+    elapsed = _elapsed_ms(step_start)
+
     # Log ONLY counts and type labels — never actual PII values
     await update_step(
         session,
@@ -113,7 +118,7 @@ async def node_pii_scan(
         meta={
             "pii_detected": pii_detected,
             "flags_count": len(pii_type_labels),
-            "latency_ms": _elapsed_ms(step_start),
+            "latency_ms": elapsed,
         },
     )
 
@@ -136,6 +141,17 @@ async def node_pii_scan(
         )
         await session.commit()
 
+        # Log only counts/booleans — never flag values (which may hint at PII type+location)
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "pii_detected": True,
+                "flags_count": len(pii_type_labels),
+                "routed_to": "needs_review",
+                "latency_ms": elapsed,
+            }
+        )
         logger.info(
             "node_pii_scan_needs_review",
             document_id=str(state.document_id),
@@ -143,6 +159,15 @@ async def node_pii_scan(
         )
         return {"validation_result": updated_vr, "status": "needs_review"}
 
+    _lf_update_span(
+        metadata={
+            "document_id": str(state.document_id),
+            "tenant_id": str(state.tenant_id),
+            "pii_detected": pii_detected,
+            "flags_count": len(pii_type_labels),
+            "latency_ms": elapsed,
+        }
+    )
     logger.info(
         "node_pii_scan_completed",
         document_id=str(state.document_id),

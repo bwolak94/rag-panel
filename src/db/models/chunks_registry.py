@@ -40,6 +40,14 @@ class ChunksRegistry(Base):
     page: Mapped[int | None] = mapped_column(Integer)
     section: Mapped[str | None] = mapped_column(String(500))
     token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Links a chunk to its exact document version so retrieval can filter
+    # by version and GDPR deletion cascades can target superseded chunks.
+    document_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("document_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

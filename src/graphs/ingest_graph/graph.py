@@ -1,13 +1,26 @@
 """LangGraph ingest pipeline factory.
 
-build_ingest_graph() compiles the 9-node pipeline with optional Postgres checkpointer.
+build_ingest_graph() compiles the ingest pipeline with optional Postgres checkpointer.
 build_resume_graph() compiles a shortened pipeline (node_chunk → END) for admin-approved docs.
 run_ingest_graph() is the entry point called by EventProcessor (backward-compatible).
 resume_ingest_graph() is called by the router background task after admin approval.
 
-Graph topology (fixed — change requires ADR):
+Graph topology — standard (fixed — change requires ADR):
     node_fetch → node_extract → node_dedupe →[cond]→ node_validate →[cond]→ node_pii_scan
     →[cond]→ node_chunk → node_embed → node_upsert → node_persist → END
+
+Graph topology — with Vision extraction (opt-in via chunk_config.vision_extraction_enabled):
+    node_fetch → node_extract → node_dedupe →[cond]→ node_validate →[cond]→ node_pii_scan
+    →[cond]→ node_chunk → node_extract_vision → node_embed → node_upsert → node_persist → END
+
+Graph topology — with Graph RAG (opt-in via chunk_config.graph_rag_enabled):
+    node_fetch → node_extract → node_dedupe →[cond]→ node_validate →[cond]→ node_pii_scan
+    →[cond]→ node_chunk → node_extract_entities → node_embed → node_upsert → node_persist → END
+
+Graph topology — with both Vision + Graph RAG enabled:
+    node_fetch → node_extract → node_dedupe →[cond]→ node_validate →[cond]→ node_pii_scan
+    →[cond]→ node_chunk → node_extract_vision → node_extract_entities
+    → node_embed → node_upsert → node_persist → END
 
 Resume graph topology (skip to chunking after admin approval):
     node_chunk → node_embed → node_upsert → node_persist → END
@@ -59,13 +72,27 @@ def _fetch_extracted(minio_client: Any, bucket: str, key: str) -> bytes:
         response.release_conn()
 
 
-def build_ingest_graph(checkpointer: Any = None) -> Any:
+def build_ingest_graph(
+    checkpointer: Any = None,
+    graph_rag_enabled: bool = False,
+    vision_extraction_enabled: bool = False,
+) -> Any:
     """Compile and return the ingest StateGraph.
 
     Args:
         checkpointer: Optional AsyncPostgresSaver for checkpoint-based graph resumption.
                       Pass None for testing or when langgraph-checkpoint-postgres is
                       not configured.
+        graph_rag_enabled: When True, inserts node_extract_entities between node_chunk
+                           (or node_extract_vision when both flags are set) and node_embed.
+                           Controlled by collection.chunk_config["graph_rag_enabled"].
+                           Defaults to False (standard pipeline).
+        vision_extraction_enabled: When True, inserts node_extract_vision between
+                                   node_chunk and node_embed (or node_extract_entities
+                                   when graph_rag_enabled is also True).
+                                   Controlled by
+                                   collection.chunk_config["vision_extraction_enabled"].
+                                   Defaults to False (standard pipeline).
 
     Returns:
         Compiled LangGraph CompiledStateGraph.
@@ -104,12 +131,66 @@ def build_ingest_graph(checkpointer: Any = None) -> Any:
         {"node_chunk": "node_chunk", END: END},
     )
 
-    builder.add_edge("node_chunk", "node_embed")
+    # Wire together the optional enrichment nodes after node_chunk.
+    # Topology variants (both flags are independent opt-ins):
+    #   standard:             node_chunk → node_embed
+    #   vision only:          node_chunk → node_extract_vision → node_embed
+    #   graph_rag only:       node_chunk → node_extract_entities → node_embed
+    #   vision + graph_rag:   node_chunk → node_extract_vision → node_extract_entities
+    #                                    → node_embed
+    if vision_extraction_enabled:
+        builder.add_node(  # type: ignore[call-overload]
+            "node_extract_vision", nodes.node_extract_vision
+        )
+        builder.add_edge("node_chunk", "node_extract_vision")
+        if graph_rag_enabled:
+            builder.add_node(  # type: ignore[call-overload]
+                "node_extract_entities", nodes.node_extract_entities
+            )
+            builder.add_edge("node_extract_vision", "node_extract_entities")
+            builder.add_edge("node_extract_entities", "node_embed")
+        else:
+            builder.add_edge("node_extract_vision", "node_embed")
+    elif graph_rag_enabled:
+        # Vision disabled, Graph RAG only: node_chunk → node_extract_entities → node_embed
+        builder.add_node(  # type: ignore[call-overload]
+            "node_extract_entities", nodes.node_extract_entities
+        )
+        builder.add_edge("node_chunk", "node_extract_entities")
+        builder.add_edge("node_extract_entities", "node_embed")
+    else:
+        # Standard topology: node_chunk → node_embed
+        builder.add_edge("node_chunk", "node_embed")
+
     builder.add_edge("node_embed", "node_upsert")
     builder.add_edge("node_upsert", "node_persist")
     builder.add_edge("node_persist", END)
 
     return builder.compile(checkpointer=checkpointer)
+
+
+async def _resolve_pipeline_flags(
+    session: AsyncSession,
+    collection_id: uuid.UUID,
+) -> tuple[bool, bool]:
+    """Read graph_rag_enabled and vision_extraction_enabled from collection.chunk_config.
+
+    Returns (graph_rag_enabled, vision_extraction_enabled).
+    Both default to False when the collection is not found or the flag is absent/falsy.
+    """
+    from sqlalchemy import select
+
+    from src.db.models.collection import Collection
+
+    result = await session.execute(select(Collection).where(Collection.id == collection_id))
+    collection = result.scalar_one_or_none()
+    if collection is None:
+        return False, False
+    chunk_config: dict[str, Any] = collection.chunk_config or {}
+    return (
+        bool(chunk_config.get("graph_rag_enabled", False)),
+        bool(chunk_config.get("vision_extraction_enabled", False)),
+    )
 
 
 async def run_ingest_graph(
@@ -137,7 +218,13 @@ async def run_ingest_graph(
     )
     await session.flush()
 
-    graph = build_ingest_graph()
+    graph_rag_enabled, vision_extraction_enabled = await _resolve_pipeline_flags(
+        session, event.collection_id
+    )
+    graph = build_ingest_graph(
+        graph_rag_enabled=graph_rag_enabled,
+        vision_extraction_enabled=vision_extraction_enabled,
+    )
 
     initial_state = IngestState(
         document_id=event.document_id,

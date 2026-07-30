@@ -18,10 +18,12 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from langfuse import observe
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.exceptions import IngestNodeError
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.db.models.document import Document
 from src.graphs.ingest_graph.helpers import get_collection, get_model, update_step, utcnow
 from src.graphs.ingest_graph.state import IngestState, ValidationResult
@@ -39,6 +41,7 @@ def _load_prompt() -> str:
     return _PROMPT_PATH.read_text(encoding="utf-8")
 
 
+@observe(name="node_validate", capture_input=False, capture_output=False)
 async def node_validate(state: IngestState, config: dict[str, Any]) -> dict[str, Any]:
     """Classify document category/quality using LLM.
 
@@ -115,6 +118,16 @@ async def node_validate(state: IngestState, config: dict[str, Any]) -> dict[str,
             "latency_ms": _elapsed_ms(step_start),
         }
 
+        elapsed = _elapsed_ms(step_start)
+        lf_meta = {
+            "document_id": str(state.document_id),
+            "tenant_id": str(state.tenant_id),
+            "category": validation_result.category,
+            "quality_score": validation_result.quality_score,
+            "confidence": validation_result.confidence,
+            "latency_ms": elapsed,
+        }
+
         # Quality gate: route to needs_review if quality too low
         if (
             validation_result.quality_score is not None
@@ -138,6 +151,7 @@ async def node_validate(state: IngestState, config: dict[str, Any]) -> dict[str,
                 started_at=step_start,
                 meta=meta,
             )
+            _lf_update_span(metadata={**lf_meta, "routed_to": "needs_review"})
             logger.info(
                 "node_validate_low_quality",
                 document_id=str(state.document_id),
@@ -157,6 +171,7 @@ async def node_validate(state: IngestState, config: dict[str, Any]) -> dict[str,
             started_at=step_start,
             meta=meta,
         )
+        _lf_update_span(metadata=lf_meta)
         logger.info(
             "node_validate_completed",
             document_id=str(state.document_id),
@@ -165,6 +180,14 @@ async def node_validate(state: IngestState, config: dict[str, Any]) -> dict[str,
         return {"validation_result": validation_result}
 
     except IngestNodeError as exc:
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "error": True,
+                "error_type": type(exc).__name__,
+            }
+        )
         await update_step(
             session,
             state.job_id,
@@ -176,6 +199,14 @@ async def node_validate(state: IngestState, config: dict[str, Any]) -> dict[str,
         raise
     except Exception as exc:
         error_msg = f"validate_error: {type(exc).__name__}"
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "error": True,
+                "error_type": type(exc).__name__,
+            }
+        )
         await update_step(
             session,
             state.job_id,

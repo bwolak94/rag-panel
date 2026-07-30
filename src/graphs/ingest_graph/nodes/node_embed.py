@@ -14,9 +14,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from langfuse import observe
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.exceptions import IngestNodeError
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.graphs.ingest_graph.helpers import get_collection, get_model, update_step, utcnow
 from src.graphs.ingest_graph.state import IngestState
 
@@ -25,6 +27,7 @@ logger = structlog.get_logger(__name__)
 _BATCH_SIZE = 32
 
 
+@observe(name="node_embed", capture_input=False, capture_output=False)
 async def node_embed(state: IngestState, config: dict[str, Any]) -> dict[str, Any]:
     """Generate embeddings for all chunks using the collection's embedding model.
 
@@ -70,6 +73,7 @@ async def node_embed(state: IngestState, config: dict[str, Any]) -> dict[str, An
                     f"embed_api_error on batch {batch_count}: {type(exc).__name__}"
                 ) from exc
 
+        elapsed = _elapsed_ms(step_start)
         await update_step(
             session,
             state.job_id,
@@ -80,8 +84,18 @@ async def node_embed(state: IngestState, config: dict[str, Any]) -> dict[str, An
                 "model_id": str(model_record.id),
                 "batch_count": batch_count,
                 "total_vectors": len(all_embeddings),
-                "latency_ms": _elapsed_ms(step_start),
+                "latency_ms": elapsed,
             },
+        )
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "embedding_model_id": str(model_record.id),
+                "batch_count": batch_count,
+                "total_vectors": len(all_embeddings),
+                "latency_ms": elapsed,
+            }
         )
         logger.info(
             "node_embed_completed",
@@ -92,6 +106,14 @@ async def node_embed(state: IngestState, config: dict[str, Any]) -> dict[str, An
         return {"embeddings": all_embeddings}
 
     except IngestNodeError as exc:
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "error": True,
+                "error_type": type(exc).__name__,
+            }
+        )
         await update_step(
             session,
             state.job_id,
@@ -103,6 +125,14 @@ async def node_embed(state: IngestState, config: dict[str, Any]) -> dict[str, An
         raise
     except Exception as exc:
         error_msg = f"embed_error: {type(exc).__name__}"
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "error": True,
+                "error_type": type(exc).__name__,
+            }
+        )
         await update_step(
             session,
             state.job_id,

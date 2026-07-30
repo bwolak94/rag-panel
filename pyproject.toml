@@ -26,6 +26,7 @@ dependencies = [
     "langgraph-checkpoint-postgres>=2.0",
     "openai>=1.50",
     "cachetools>=5.3",
+    "rank-bm25>=0.2",
 ]
 
 [dependency-groups]
@@ -43,6 +44,9 @@ dev = [
     "types-redis>=4.6",
     "types-cachetools>=5.3",
     "cryptography>=42.0",
+    "import-linter>=2.1",
+    "ragas>=0.2",
+    "datasets>=2.0",
 ]
 
 [build-system]
@@ -60,6 +64,9 @@ exclude = ["src/db/migrations/"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "ANN"]
 ignore = ["ANN401", "PLW0603"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -89,3 +96,46 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
 ]
+
+# ---------------------------------------------------------------------------
+# import-linter — enforces layered architecture: api → domain → core
+# Forbidden directions: domain → api, core → api, core → domain
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_packages = ["src"]
+
+[[tool.importlinter.contracts]]
+name = "domain must not import from api"
+type = "forbidden"
+source_modules = ["src.domain"]
+forbidden_modules = ["src.api"]
+
+[[tool.importlinter.contracts]]
+name = "core must not import from api"
+type = "forbidden"
+source_modules = ["src.core"]
+forbidden_modules = ["src.api"]
+
+[[tool.importlinter.contracts]]
+name = "core must not import from domain"
+type = "forbidden"
+source_modules = ["src.core"]
+forbidden_modules = ["src.domain"]
+
+[[tool.importlinter.contracts]]
+name = "graphs must not import from api"
+type = "forbidden"
+source_modules = ["src.graphs"]
+forbidden_modules = ["src.api"]
+
+[[tool.importlinter.contracts]]
+name = "retrieval must not import from api"
+type = "forbidden"
+source_modules = ["src.retrieval"]
+forbidden_modules = ["src.api"]
+
+[[tool.importlinter.contracts]]
+name = "ingest must not import from api"
+type = "forbidden"
+source_modules = ["src.ingest"]
+forbidden_modules = ["src.api"]

@@ -9,6 +9,11 @@ Tests cover:
 - LLM raises a generic exception → QueryNodeError raised
 - Model not found in DB → QueryNodeError raised
 - Token counts are extracted from response.usage when present
+- Token budget not exceeded: all chunks included
+- Token budget exceeded: lowest-score chunks dropped
+- Token budget=None in state but guardrails_config override applies
+- _count_tokens returns correct value
+- _trim_chunks_to_budget preserves original chunk order
 """
 
 from __future__ import annotations
@@ -20,7 +25,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.core.exceptions import QueryNodeError
-from src.graphs.query_graph.nodes.node_generate import node_generate
+from src.graphs.query_graph.nodes.node_generate import (
+    _count_tokens,
+    _trim_chunks_to_budget,
+    node_generate,
+)
 from src.graphs.query_graph.state import QueryState
 
 TENANT_ID = uuid.uuid4()
@@ -40,6 +49,8 @@ def _make_state(
     graded_chunks: list[dict] | None = None,
     question: str = "Jakie są procedury przyjęcia pacjenta?",
     conversation_history: list[dict[str, str]] | None = None,
+    context_token_budget: int | None = None,
+    guardrails_config: dict | None = None,
 ) -> QueryState:
     return QueryState(
         question=question,
@@ -51,6 +62,8 @@ def _make_state(
         collection_ids=[COLLECTION_ID],
         graded_chunks=graded_chunks or [],
         conversation_history=conversation_history or [],
+        context_token_budget=context_token_budget,
+        guardrails_config=guardrails_config or {},
     )
 
 
@@ -452,3 +465,199 @@ async def test_llm_called_with_correct_model_and_base_url() -> None:
     assert call_kwargs["base_url"] == "http://vllm:8000/v1"
     assert call_kwargs["temperature"] == 0.0
     assert call_kwargs["response_format"] == {"type": "json_object"}
+
+
+# ---------------------------------------------------------------------------
+# Token budget helpers — pure-function tests (no LLM needed)
+# ---------------------------------------------------------------------------
+
+
+def test_count_tokens_returns_positive_integer_for_nonempty_text() -> None:
+    """_count_tokens returns a positive integer for any non-empty string."""
+    count = _count_tokens("Pacjent musi wypełnić formularz rejestracyjny.")
+    assert isinstance(count, int)
+    assert count > 0
+
+
+def test_count_tokens_returns_zero_for_empty_string() -> None:
+    """_count_tokens returns 0 for an empty string."""
+    assert _count_tokens("") == 0
+
+
+def test_trim_chunks_budget_not_exceeded_keeps_all_chunks() -> None:
+    """When total tokens fit within budget, all chunks are returned unchanged."""
+    chunks = [
+        _make_chunk(highlight_text="Short text A.", score=0.9),
+        _make_chunk(highlight_text="Short text B.", score=0.8),
+    ]
+    # Use a large budget so nothing is trimmed
+    kept, dropped = _trim_chunks_to_budget(chunks, budget=100_000)
+    assert dropped == 0
+    assert len(kept) == 2
+
+
+def test_trim_chunks_budget_exceeded_drops_lowest_score_chunks() -> None:
+    """When budget is very small, the lowest-scoring chunk is dropped first."""
+    high_score_chunk = _make_chunk(highlight_text="High score text.", score=0.95)
+    low_score_chunk = _make_chunk(highlight_text="Low score text.", score=0.10)
+    chunks = [high_score_chunk, low_score_chunk]
+
+    # Budget that fits exactly one short chunk but not two
+    single_chunk_tokens = _count_tokens("High score text.")
+    budget = single_chunk_tokens  # fits exactly the high-score chunk
+
+    kept, dropped = _trim_chunks_to_budget(chunks, budget=budget)
+    assert dropped == 1
+    assert len(kept) == 1
+    # The high-score chunk must be retained
+    assert kept[0]["score"] == pytest.approx(0.95)
+
+
+def test_trim_chunks_preserves_original_order_of_kept_chunks() -> None:
+    """Chunks kept after trimming appear in their original list order."""
+    chunk_a = _make_chunk(highlight_text="Alpha text.", score=0.7, document_id="aaa")
+    chunk_b = _make_chunk(highlight_text="Beta text.", score=0.9, document_id="bbb")
+    chunk_c = _make_chunk(highlight_text="Gamma text.", score=0.5, document_id="ccc")
+    chunks = [chunk_a, chunk_b, chunk_c]
+
+    # Budget that allows two chunks (b + a) but not c
+    budget = _count_tokens("Alpha text.") + _count_tokens("Beta text.")
+
+    kept, dropped = _trim_chunks_to_budget(chunks, budget=budget)
+    assert dropped == 1
+    # Original order: a (idx 0) then b (idx 1)
+    assert kept[0]["document_id"] == "aaa"
+    assert kept[1]["document_id"] == "bbb"
+
+
+def test_trim_chunks_empty_list_returns_empty_with_zero_dropped() -> None:
+    """Empty chunk list returns empty list with 0 dropped."""
+    kept, dropped = _trim_chunks_to_budget([], budget=1000)
+    assert kept == []
+    assert dropped == 0
+
+
+# ---------------------------------------------------------------------------
+# Token budget integration — node_generate end-to-end
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_budget_not_exceeded_all_chunks_included() -> None:
+    """When chunks fit within budget, all are passed to LLM and chunks_trimmed==0."""
+    chunks = [
+        _make_chunk(highlight_text="A.", score=0.9),
+        _make_chunk(highlight_text="B.", score=0.8),
+    ]
+    # Budget large enough for both tiny chunks
+    state = _make_state(graded_chunks=chunks, context_token_budget=100_000)
+
+    llm_json = json.dumps({"answer": "Odpowiedź.", "citations": []})
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
+
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
+        result = await node_generate(state, _make_config(llm, db))
+
+    assert result["chunks_trimmed"] == 0
+    # Both chunks appear in the prompt — check that context contains both doc markers
+    call_args = llm.chat_completion.call_args.kwargs
+    context_in_prompt = call_args["messages"][0]["content"]
+    assert 'index="1"' in context_in_prompt
+    assert 'index="2"' in context_in_prompt
+
+
+@pytest.mark.asyncio
+async def test_budget_exceeded_lowest_score_chunk_dropped() -> None:
+    """When budget is tight, the lowest-score chunk is dropped and chunks_trimmed==1."""
+    high_chunk = _make_chunk(
+        highlight_text="Important clinical note.",
+        score=0.95,
+        document_id="high-doc",
+    )
+    low_chunk = _make_chunk(
+        highlight_text="Less relevant text here.",
+        score=0.10,
+        document_id="low-doc",
+    )
+    chunks = [high_chunk, low_chunk]
+
+    # Budget that fits only the high-score chunk
+    budget = _count_tokens("Important clinical note.")
+    state = _make_state(graded_chunks=chunks, context_token_budget=budget)
+
+    llm_json = json.dumps({"answer": "Odpowiedź.", "citations": []})
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
+
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
+        result = await node_generate(state, _make_config(llm, db))
+
+    assert result["chunks_trimmed"] == 1
+    # Low-score chunk must not appear in the prompt as a document_id attribute
+    call_args = llm.chat_completion.call_args.kwargs
+    prompt_content = call_args["messages"][0]["content"]
+    assert 'document_id="low-doc"' not in prompt_content
+    assert 'document_id="high-doc"' in prompt_content
+
+
+@pytest.mark.asyncio
+async def test_budget_none_falls_back_to_global_default() -> None:
+    """When state.context_token_budget is None and no guardrails override, the global
+    default (patched to a large value) is used so no trimming occurs."""
+    chunks = [_make_chunk(highlight_text="Tekst A.", score=0.9)]
+    # context_token_budget=None (default) and empty guardrails_config
+    state = _make_state(graded_chunks=chunks, context_token_budget=None, guardrails_config={})
+
+    llm_json = json.dumps({"answer": "Odpowiedź.", "citations": []})
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
+
+    # Patch the global default to a large value to confirm no trimming
+    with (
+        patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT),
+        patch("src.graphs.query_graph.nodes.node_generate.settings") as mock_settings,
+    ):
+        mock_settings.DEFAULT_CONTEXT_TOKEN_BUDGET = 100_000
+        result = await node_generate(state, _make_config(llm, db))
+
+    assert result["chunks_trimmed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_guardrails_config_budget_overrides_global_default() -> None:
+    """Per-pipeline guardrails_config["context_token_budget"] takes precedence over
+    the global default when state.context_token_budget is None."""
+    high_chunk = _make_chunk(highlight_text="Critical info.", score=0.95, document_id="h")
+    low_chunk = _make_chunk(highlight_text="Noise.", score=0.05, document_id="l")
+    chunks = [high_chunk, low_chunk]
+
+    # Budget in guardrails_config fits only the high-score chunk
+    pipeline_budget = _count_tokens("Critical info.")
+    state = _make_state(
+        graded_chunks=chunks,
+        context_token_budget=None,
+        guardrails_config={"context_token_budget": pipeline_budget},
+    )
+
+    llm_json = json.dumps({"answer": "Odpowiedź.", "citations": []})
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
+
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
+        result = await node_generate(state, _make_config(llm, db))
+
+    assert result["chunks_trimmed"] == 1
+    call_args = llm.chat_completion.call_args.kwargs
+    prompt_content = call_args["messages"][0]["content"]
+    # document_id="h" is present; document_id="l" is absent from the XML chunks
+    assert 'document_id="h"' in prompt_content
+    assert 'document_id="l"' not in prompt_content

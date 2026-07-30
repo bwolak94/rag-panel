@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "feature/**", "fix/**", "chore/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  lint-and-test:
+    name: Lint, type-check, import-layer, unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Ruff — lint
+        run: uv run ruff check .
+
+      - name: Ruff — format check
+        run: uv run ruff format --check .
+
+      - name: mypy — static type check
+        run: uv run mypy src/
+
+      - name: import-linter — layer isolation
+        run: uv run lint-imports
+
+      - name: pytest — unit tests (no integration)
+        run: uv run pytest -x -q --ignore=tests/integration

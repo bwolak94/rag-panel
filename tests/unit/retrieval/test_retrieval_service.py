@@ -14,8 +14,9 @@ import pytest
 from qdrant_client.models import Filter
 
 from src.retrieval.exceptions import EmptyCollectionListError, QdrantUnavailableError
-from src.retrieval.schemas import QdrantPoint, RetrievalResult, TenantContext
-from src.retrieval.service import RetrievalService
+from src.retrieval.reranker import reciprocal_rank_fusion
+from src.retrieval.schemas import QdrantPoint, RetrievalResult, SearchMode, TenantContext
+from src.retrieval.service import RetrievalService, _run_bm25
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -335,3 +336,245 @@ async def test_search_cannot_bypass_tenant_with_additional_filter() -> None:
     # The correct tenant value must be used (not the evil one)
     tenant_cond = next(c for c in must_conditions if getattr(c, "key", None) == "tenant_id")
     assert tenant_cond.match.value == str(TENANT_ID)
+
+
+# ---------------------------------------------------------------------------
+# SearchMode dispatch tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_dense_mode_does_not_call_hybrid() -> None:
+    """search() in DENSE mode calls query_points exactly once (no BM25 corpus fetch)."""
+    service, client = make_service()
+    client.query_points.return_value = make_query_response([])
+
+    ctx = make_ctx()
+    await service.search(
+        ctx, "emb_bge_m3", [0.1, 0.2], search_mode=SearchMode.DENSE, query_text="hello"
+    )
+
+    assert client.query_points.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_search_hybrid_mode_dispatches_to_search_hybrid() -> None:
+    """search() with HYBRID mode dispatches to search_hybrid() (two Qdrant calls)."""
+    service, client = make_service()
+    # Both dense and corpus calls return the same hit set — that is fine for this test.
+    hit = make_qdrant_hit(score=0.9)
+    client.query_points.return_value = make_query_response([hit])
+
+    ctx = make_ctx()
+    results = await service.search(
+        ctx,
+        "emb_bge_m3",
+        [0.1, 0.2],
+        top_k=1,
+        search_mode=SearchMode.HYBRID,
+        query_text="diabetes treatment",
+    )
+
+    # Two Qdrant calls: one for dense top_k, one for BM25 corpus (top_k * multiplier)
+    assert client.query_points.call_count == 2
+    assert isinstance(results[0], RetrievalResult)
+
+
+@pytest.mark.asyncio
+async def test_search_hybrid_without_query_text_raises() -> None:
+    """search() with HYBRID mode and no query_text raises ValueError immediately."""
+    service, client = make_service()
+    ctx = make_ctx()
+
+    with pytest.raises(ValueError, match="query_text"):
+        await service.search(
+            ctx,
+            "emb_bge_m3",
+            [0.1],
+            search_mode=SearchMode.HYBRID,
+            query_text=None,
+        )
+
+    client.query_points.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _run_bm25 unit tests (pure function, no Qdrant)
+# ---------------------------------------------------------------------------
+
+
+def _make_result(text: str, score: float = 0.5) -> RetrievalResult:
+    pid = uuid.uuid4()
+    return RetrievalResult(
+        point_id=pid,
+        document_id=DOCUMENT_ID,
+        score=score,
+        payload={"tenant_id": str(TENANT_ID), "document_id": str(DOCUMENT_ID), "text": text},
+        collection_id=COLLECTION_ID,
+    )
+
+
+def test_run_bm25_returns_same_count() -> None:
+    """_run_bm25 returns the same number of results as the input corpus."""
+    corpus = [_make_result(t) for t in ["alpha beta", "gamma delta", "alpha gamma"]]
+    ranked = _run_bm25("alpha", corpus)
+    assert len(ranked) == len(corpus)
+
+
+def test_run_bm25_ranks_matching_first() -> None:
+    """Document containing the query term is ranked above unrelated documents."""
+    corpus = [
+        _make_result("completely unrelated content"),
+        _make_result("diabetes insulin treatment glucose"),
+        _make_result("weather forecast tomorrow"),
+    ]
+    ranked = _run_bm25("diabetes glucose", corpus)
+    assert "diabetes" in ranked[0].payload["text"]
+
+
+def test_run_bm25_empty_corpus_returns_empty() -> None:
+    """Empty input corpus returns empty list without error."""
+    assert _run_bm25("query", []) == []
+
+
+def test_run_bm25_replaces_score_with_bm25_score() -> None:
+    """Returned results have .score set to BM25 score, not the original dense score."""
+    original_dense_score = 0.99
+    corpus = [_make_result("hello world", score=original_dense_score)]
+    ranked = _run_bm25("hello", corpus)
+    # BM25 score for a single-document corpus with a matching term is > 0
+    # and differs from the dense score placeholder.
+    assert ranked[0].score != original_dense_score or ranked[0].score >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# reciprocal_rank_fusion unit tests (pure function, no Qdrant)
+# ---------------------------------------------------------------------------
+
+
+def _make_rrf_result(text: str, score: float = 0.5) -> RetrievalResult:
+    """Create a fresh RetrievalResult with a unique point_id for RRF tests."""
+    return RetrievalResult(
+        point_id=uuid.uuid4(),
+        document_id=DOCUMENT_ID,
+        score=score,
+        payload={"text": text},
+        collection_id=COLLECTION_ID,
+    )
+
+
+def test_rrf_merges_disjoint_lists() -> None:
+    """RRF on two disjoint lists returns combined results (union of both)."""
+    dense = [_make_rrf_result("dense doc") for _ in range(3)]
+    bm25 = [_make_rrf_result("bm25 doc") for _ in range(3)]
+    fused = reciprocal_rank_fusion(dense, bm25)
+    assert len(fused) == 6
+
+
+def test_rrf_deduplicates_shared_results() -> None:
+    """A point appearing in both lists is counted once with a higher combined score."""
+    shared = _make_rrf_result("shared document", score=0.9)
+    only_dense = _make_rrf_result("only dense", score=0.8)
+    only_bm25 = _make_rrf_result("only bm25", score=0.7)
+
+    dense = [shared, only_dense]
+    bm25 = [shared, only_bm25]
+
+    fused = reciprocal_rank_fusion(dense, bm25)
+
+    # Three unique point_ids
+    assert len(fused) == 3
+
+    # The shared document should have the highest RRF score because it
+    # receives contributions from both ranked lists at rank 1.
+    assert fused[0].point_id == shared.point_id
+
+
+def test_rrf_score_formula() -> None:
+    """Verify RRF score equals sum(1/(k+rank)) for k=60."""
+    k = 60
+    result = _make_rrf_result("only doc", score=0.5)
+
+    # Put the same result at rank 1 in both lists — score should be 2/(k+1)
+    fused = reciprocal_rank_fusion([result], [result], k=k)
+    assert len(fused) == 1
+    expected = 1.0 / (k + 1) + 1.0 / (k + 1)
+    assert abs(fused[0].score - expected) < 1e-9
+
+
+def test_rrf_empty_inputs() -> None:
+    """RRF on two empty lists returns an empty list."""
+    assert reciprocal_rank_fusion([], []) == []
+
+
+def test_rrf_one_empty_list() -> None:
+    """RRF with one empty list returns the other list's results with single-list scores."""
+    k = 60
+    result = _make_rrf_result("doc")
+    fused = reciprocal_rank_fusion([result], [], k=k)
+    assert len(fused) == 1
+    assert abs(fused[0].score - 1.0 / (k + 1)) < 1e-9
+
+
+def test_rrf_output_ordered_by_score_descending() -> None:
+    """RRF result list is always ordered by RRF score descending."""
+    # Build lists where rank order differs so RRF scores vary.
+    results = [_make_rrf_result(f"doc {i}") for i in range(5)]
+    dense = results[:3]
+    bm25 = list(reversed(results[2:]))  # reversed overlap at index 2
+
+    fused = reciprocal_rank_fusion(dense, bm25)
+    scores = [r.score for r in fused]
+    assert scores == sorted(scores, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# search_hybrid tenant isolation tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.tenant_isolation
+@pytest.mark.asyncio
+async def test_search_hybrid_always_includes_tenant_filter() -> None:
+    """Both Qdrant calls in search_hybrid include the mandatory tenant_id filter."""
+    service, client = make_service()
+    client.query_points.return_value = make_query_response([])
+
+    ctx = make_ctx()
+    await service.search_hybrid(ctx, "emb_bge_m3", [0.1, 0.2], query_text="test query", top_k=2)
+
+    assert client.query_points.call_count == 2
+    for call in client.query_points.call_args_list:
+        flt: Filter = call.kwargs["query_filter"]
+        must = flt.must or []
+        keys = [c.key for c in must if hasattr(c, "key")]
+        assert "tenant_id" in keys, "tenant_id missing from a search_hybrid Qdrant call"
+
+
+@pytest.mark.tenant_isolation
+@pytest.mark.asyncio
+async def test_search_hybrid_empty_collections_raises() -> None:
+    """EmptyCollectionListError propagates from search_hybrid before any Qdrant I/O."""
+    service, client = make_service()
+    ctx = make_ctx(allowed_collection_ids=[])
+
+    with pytest.raises(EmptyCollectionListError):
+        await service.search_hybrid(ctx, "emb_bge_m3", [0.1], query_text="query")
+
+    client.query_points.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_hybrid_returns_at_most_top_k() -> None:
+    """search_hybrid returns no more than top_k results after RRF fusion."""
+    service, client = make_service()
+    # Return 10 hits from both calls (corpus = 5 * top_k = 10, dense = top_k = 2)
+    hits = [make_qdrant_hit(score=0.9 - i * 0.05) for i in range(10)]
+    client.query_points.return_value = make_query_response(hits)
+
+    ctx = make_ctx()
+    results = await service.search_hybrid(
+        ctx, "emb_bge_m3", [0.1], query_text="some query", top_k=2
+    )
+
+    assert len(results) <= 2

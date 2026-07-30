@@ -1,11 +1,20 @@
 """LangGraph query pipeline factory.
 
-build_query_graph() compiles the 6-node pipeline with optional Postgres checkpointer.
+build_query_graph() compiles the query pipeline with optional Postgres checkpointer.
 invoke_query_graph() is the entry point called by ChatService._invoke_graph().
 
-Graph topology (fixed — change requires ADR):
-    node_classify_intent →[cond]→ node_rewrite_query → node_retrieve → node_grade_documents
-    →[cond]→ node_generate → node_guardrails_output → END
+Graph topology — standard (fixed — change requires ADR):
+    node_classify_intent →[cond]→ node_rewrite_query → node_retrieve → node_rerank
+    → node_grade_documents →[cond]→ node_generate → node_guardrails_output → END
+
+Graph topology — with Graph RAG (opt-in via prompt_config.graph_rag_enabled):
+    node_classify_intent →[cond]→ node_rewrite_query → node_retrieve ──┐
+                                                 └→ node_graph_retrieve ─┤
+                                                                         ↓
+                                                                   node_rerank
+    → node_grade_documents →[cond]→ node_generate → node_guardrails_output → END
+
+node_rerank is a transparent pass-through when QueryState.rerank_enabled=False (default).
 
 Per docs/02-Architektura.md ADR-9.
 """
@@ -32,13 +41,20 @@ from src.retrieval.service import RetrievalService
 logger = structlog.get_logger(__name__)
 
 
-def build_query_graph(checkpointer: Any = None) -> Any:
+def build_query_graph(
+    checkpointer: Any = None,
+    graph_rag_enabled: bool = False,
+) -> Any:
     """Compile and return the query StateGraph.
 
     Args:
         checkpointer: Optional AsyncPostgresSaver for checkpoint-based graph resumption.
                       Pass None for testing or when langgraph-checkpoint-postgres is
                       not configured.
+        graph_rag_enabled: When True, node_graph_retrieve is added in parallel with
+                           node_retrieve; both converge at node_rerank.
+                           Controlled by pipeline.prompt_config["graph_rag_enabled"].
+                           Defaults to False (standard pipeline).
 
     Returns:
         Compiled LangGraph CompiledStateGraph.
@@ -50,6 +66,7 @@ def build_query_graph(checkpointer: Any = None) -> Any:
     builder.add_node("node_classify_intent", nodes.node_classify_intent)  # type: ignore[call-overload]
     builder.add_node("node_rewrite_query", nodes.node_rewrite_query)  # type: ignore[call-overload]
     builder.add_node("node_retrieve", nodes.node_retrieve)  # type: ignore[call-overload]
+    builder.add_node("node_rerank", nodes.node_rerank)  # type: ignore[call-overload]
     builder.add_node("node_grade_documents", nodes.node_grade_documents)  # type: ignore[call-overload]
     builder.add_node("node_generate", nodes.node_generate)  # type: ignore[call-overload]
     builder.add_node("node_guardrails_output", nodes.node_guardrails_output)  # type: ignore[call-overload]
@@ -65,8 +82,21 @@ def build_query_graph(checkpointer: Any = None) -> Any:
         },
     )
 
-    builder.add_edge("node_rewrite_query", "node_retrieve")
-    builder.add_edge("node_retrieve", "node_grade_documents")
+    if graph_rag_enabled:
+        # Parallel branch: node_rewrite_query fans out to both retrieve nodes;
+        # both edges converge at node_rerank.
+        builder.add_node(  # type: ignore[call-overload]
+            "node_graph_retrieve", nodes.node_graph_retrieve
+        )
+        builder.add_edge("node_rewrite_query", "node_retrieve")
+        builder.add_edge("node_rewrite_query", "node_graph_retrieve")
+        builder.add_edge("node_retrieve", "node_rerank")
+        builder.add_edge("node_graph_retrieve", "node_rerank")
+    else:
+        builder.add_edge("node_rewrite_query", "node_retrieve")
+        builder.add_edge("node_retrieve", "node_rerank")
+
+    builder.add_edge("node_rerank", "node_grade_documents")
 
     builder.add_conditional_edges(
         "node_grade_documents",
@@ -157,7 +187,8 @@ async def invoke_query_graph(
     # collections the requesting user is not authorised to read.
     _assert_pipeline_collections_authorized(pipeline, ctx)
 
-    graph = build_query_graph()
+    graph_rag_enabled: bool = bool((pipeline.prompt_config or {}).get("graph_rag_enabled", False))
+    graph = build_query_graph(graph_rag_enabled=graph_rag_enabled)
 
     _lf_update_span(
         {

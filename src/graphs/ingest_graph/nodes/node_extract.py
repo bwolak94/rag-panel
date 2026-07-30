@@ -7,6 +7,9 @@ Saves extracted.json to MinIO processed/ prefix for debugging.
 Security:
 - Never log extracted text content.
 - Docling must run in executor (never block the event loop).
+
+GDPR: Langfuse spans contain only document_id, tenant_id, page/section/word counts,
+mime_type, and latency. No extracted text or document content appears in spans.
 """
 
 from __future__ import annotations
@@ -18,10 +21,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from langfuse import observe
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.exceptions import IngestNodeError
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.db.models.document import Document
 from src.graphs.ingest_graph.helpers import update_step, utcnow
 from src.graphs.ingest_graph.state import IngestState, Section
@@ -87,6 +92,7 @@ def _extract_plain(raw: bytes) -> tuple[str, list[Section]]:
     return text, sections
 
 
+@observe(name="node_extract", capture_input=False, capture_output=False)
 async def node_extract(state: IngestState, config: dict[str, Any]) -> dict[str, Any]:
     """Extract text and sections from raw_bytes.
 
@@ -157,6 +163,7 @@ async def node_extract(state: IngestState, config: dict[str, Any]) -> dict[str, 
 
             await loop.run_in_executor(None, _put)
 
+        elapsed = _elapsed_ms(step_start)
         await update_step(
             session,
             state.job_id,
@@ -167,8 +174,19 @@ async def node_extract(state: IngestState, config: dict[str, Any]) -> dict[str, 
                 "page_count": len(page_set),
                 "word_count": word_count,
                 "section_count": len(sections),
-                "latency_ms": _elapsed_ms(step_start),
+                "latency_ms": elapsed,
             },
+        )
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "mime_type": mime,
+                "page_count": len(page_set),
+                "section_count": len(sections),
+                "word_count": word_count,
+                "latency_ms": elapsed,
+            }
         )
         logger.info(
             "node_extract_completed",
@@ -179,6 +197,14 @@ async def node_extract(state: IngestState, config: dict[str, Any]) -> dict[str, 
         return {"extracted_text": full_text, "extracted_sections": sections}
 
     except IngestNodeError as exc:
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "error": True,
+                "error_type": type(exc).__name__,
+            }
+        )
         await update_step(
             session,
             state.job_id,
@@ -190,6 +216,14 @@ async def node_extract(state: IngestState, config: dict[str, Any]) -> dict[str, 
         raise
     except Exception as exc:
         error_msg = f"extract_error: {type(exc).__name__}"
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "error": True,
+                "error_type": type(exc).__name__,
+            }
+        )
         await update_step(
             session,
             state.job_id,

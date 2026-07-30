@@ -1,0 +1,9 @@
+{
+  "faithfulness": 0.7953,
+  "answer_relevancy": 0.3063,
+  "context_precision": 0.7333,
+  "context_recall": 0.5667,
+  "timestamp": "2026-07-30T00:00:00Z",
+  "commit": "baseline",
+  "notes": "CI baseline measured against the deterministic mock pipeline (no real LLM). Mock answers are context excerpts prefixed with a question restatement. Real-model targets (BGE-M3 + Bielik-11B-v2.3-Instruct): faithfulness~0.82, answer_relevancy~0.79, context_precision~0.75, context_recall~0.71. Update via: python tests/eval/update_baseline.py after running against a live model."
+}

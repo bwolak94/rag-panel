@@ -118,22 +118,44 @@ class ChatService:
         llm = self._build_llm_client()
         retrieval = await self._build_retrieval_service()
 
-        # Invoke the real LangGraph query graph
-        (
-            answer,
-            citation_dicts,
-            no_results,
-            prompt_tokens,
-            completion_tokens,
-        ) = await self._invoke_graph(
-            question=question,
-            pipeline=pipeline,
-            ctx=ctx,
-            db=db,
-            llm=llm,
-            retrieval=retrieval,
-            conversation_history=conversation_history,
-        )
+        # Dispatch to research graph when pipeline.prompt_config["research_mode"] is True
+        research_mode: bool = bool((pipeline.prompt_config or {}).get("research_mode", False))
+
+        if research_mode:
+            (
+                answer,
+                citation_dicts,
+                prompt_tokens,
+                completion_tokens,
+            ) = await self._invoke_research_graph(
+                question=question,
+                pipeline=pipeline,
+                ctx=ctx,
+                db=db,
+                llm=llm,
+                retrieval=retrieval,
+                conversation_history=conversation_history,
+            )
+            # Research graph always returns evidence-based answers; no_results is
+            # derived from citation presence (empty citations ≙ nothing found).
+            no_results = len(citation_dicts) == 0 and not answer
+        else:
+            # Invoke the real LangGraph query graph
+            (
+                answer,
+                citation_dicts,
+                no_results,
+                prompt_tokens,
+                completion_tokens,
+            ) = await self._invoke_graph(
+                question=question,
+                pipeline=pipeline,
+                ctx=ctx,
+                db=db,
+                llm=llm,
+                retrieval=retrieval,
+                conversation_history=conversation_history,
+            )
 
         # Convert citation dicts to MessageSourceOut schemas
         citations = self._parse_citations(citation_dicts)
@@ -264,6 +286,40 @@ class ChatService:
             raise TypeError("retrieval must be a RetrievalService instance")
 
         return await invoke_query_graph(
+            question=question,
+            pipeline=pipeline,
+            ctx=ctx,
+            db=db,
+            llm=llm,
+            retrieval=retrieval,
+            conversation_history=conversation_history,
+        )
+
+    async def _invoke_research_graph(
+        self,
+        *,
+        question: str,
+        pipeline: RagPipeline,
+        ctx: UserContext,
+        db: AsyncSession,
+        llm: LLMClient,
+        retrieval: object,
+        conversation_history: list[dict[str, str]],
+    ) -> tuple[str, list[dict[str, object]], int, int]:
+        """Invoke the agentic multi-hop research graph and return results.
+
+        Called when pipeline.prompt_config["research_mode"] is True.
+
+        Returns:
+            Tuple of (answer, citation_dicts, prompt_tokens, completion_tokens).
+        """
+        from src.graphs.research_graph.graph import invoke_research_graph
+        from src.retrieval.service import RetrievalService
+
+        if not isinstance(retrieval, RetrievalService):
+            raise TypeError("retrieval must be a RetrievalService instance")
+
+        return await invoke_research_graph(
             question=question,
             pipeline=pipeline,
             ctx=ctx,

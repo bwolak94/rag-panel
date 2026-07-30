@@ -2,17 +2,44 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 
+class SearchMode(StrEnum):
+    """Search strategy for a retrieval call.
+
+    DENSE  — pure vector similarity search (default).
+    HYBRID — BM25 keyword search fused with dense search via Reciprocal Rank Fusion.
+             Typically adds 5–15% MRR over DENSE alone.
+    """
+
+    DENSE = "dense"
+    HYBRID = "hybrid"
+
+
 class TenantContext(BaseModel):
-    """Tenant scope for all Qdrant operations. Always from JWT — never from request body."""
+    """Tenant scope for all Qdrant operations. Always from JWT — never from request body.
+
+    Read filter semantics (enforced in filters.build_read_filter):
+        (tenant_id == self.tenant_id AND collection_id IN allowed_collection_ids)
+        OR (collection_id IN public_collection_ids)
+
+    Write filter semantics (enforced in RetrievalService.upsert_batch /
+    delete_by_document):
+        tenant_id == self.tenant_id — public collections require the caller
+        to be the managed_by_tenant_id; RetrievalService rejects all other
+        write attempts with PermissionError.
+    """
 
     tenant_id: UUID
     allowed_collection_ids: list[UUID] = Field(default_factory=list)
+    # IDs of platform-wide public collections the tenant may READ but not write.
+    # Populated by the auth dependency from CollectionRepository.get_public_collections().
+    public_collection_ids: list[UUID] = Field(default_factory=list)
 
 
 class RetrievalResult(BaseModel):
@@ -52,6 +79,19 @@ class RetrievalServiceProtocol(Protocol):
         ctx: TenantContext,
         qdrant_collection: str,
         query_vector: list[float],
+        top_k: int,
+        score_threshold: float,
+        additional_filter: object | None,
+        search_mode: SearchMode,
+        query_text: str | None,
+    ) -> list[RetrievalResult]: ...
+
+    async def search_hybrid(
+        self,
+        ctx: TenantContext,
+        qdrant_collection: str,
+        query_vector: list[float],
+        query_text: str,
         top_k: int,
         score_threshold: float,
         additional_filter: object | None,

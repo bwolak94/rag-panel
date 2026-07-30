@@ -5,6 +5,9 @@ Security:
 - Verifies SHA-256 against documents.sha256 stored at upload time.
 - Never logs raw_bytes content; uses len() for size.
 - Raises IngestNodeError (never bare Exception).
+
+GDPR: Langfuse spans contain only document_id, tenant_id, size_bytes, and latency.
+No document content, PII, or file names appear in spans.
 """
 
 from __future__ import annotations
@@ -15,10 +18,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from langfuse import observe
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.exceptions import IngestNodeError
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.db.models.document import Document
 from src.graphs.ingest_graph.helpers import update_step, utcnow
 from src.graphs.ingest_graph.state import IngestState
@@ -26,6 +31,7 @@ from src.graphs.ingest_graph.state import IngestState
 logger = structlog.get_logger(__name__)
 
 
+@observe(name="node_fetch", capture_input=False, capture_output=False)
 async def node_fetch(state: IngestState, config: dict[str, Any]) -> dict[str, Any]:
     """Download document bytes from MinIO; verify SHA-256 integrity.
 
@@ -79,13 +85,22 @@ async def node_fetch(state: IngestState, config: dict[str, Any]) -> dict[str, An
                 f"expected={document.sha256[:8]}…, got={computed_sha256[:8]}…"
             )
 
+        elapsed = _elapsed_ms(step_start)
         await update_step(
             session,
             state.job_id,
             stage="fetch",
             status="completed",
             started_at=step_start,
-            meta={"size_bytes": len(raw_bytes), "latency_ms": _elapsed_ms(step_start)},
+            meta={"size_bytes": len(raw_bytes), "latency_ms": elapsed},
+        )
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "size_bytes": len(raw_bytes),
+                "latency_ms": elapsed,
+            }
         )
         logger.info(
             "node_fetch_completed",
@@ -95,6 +110,14 @@ async def node_fetch(state: IngestState, config: dict[str, Any]) -> dict[str, An
         return {"raw_bytes": raw_bytes, "sha256": computed_sha256}
 
     except IngestNodeError as exc:
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "error": True,
+                "error_type": type(exc).__name__,
+            }
+        )
         await update_step(
             session,
             state.job_id,
@@ -106,6 +129,14 @@ async def node_fetch(state: IngestState, config: dict[str, Any]) -> dict[str, An
         raise
     except Exception as exc:
         error_msg = f"fetch_error: {type(exc).__name__}"
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "error": True,
+                "error_type": type(exc).__name__,
+            }
+        )
         await update_step(
             session,
             state.job_id,

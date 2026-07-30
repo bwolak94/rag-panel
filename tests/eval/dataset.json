@@ -1,0 +1,167 @@
+[
+  {
+    "question": "Do czego stosuje się metforminę?",
+    "ground_truth": "Metformina jest lekiem pierwszego rzutu stosowanym w leczeniu cukrzycy typu 2. Zmniejsza wytwarzanie glukozy przez wątrobę i poprawia wrażliwość tkanek na insulinę. Stosuje się ją zarówno w monoterapii, jak i w skojarzeniu z innymi lekami przeciwcukrzycowymi.",
+    "contexts": [
+      "Metformina zmniejsza wytwarzanie glukozy przez wątrobę (glukoneogenezę wątrobową) i jest powszechnie stosowana jako lek pierwszego rzutu w cukrzycy typu 2. Poprawia wrażliwość tkanek obwodowych na insulinę bez powodowania hipoglikemii."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jakie są główne działania niepożądane ibuprofenu?",
+    "ground_truth": "Ibuprofen może powodować działania niepożądane ze strony przewodu pokarmowego, takie jak bóle brzucha, nudności i owrzodzenia żołądka. Może również wpływać na czynność nerek i zwiększać ryzyko powikłań sercowo-naczyniowych przy długotrwałym stosowaniu.",
+    "contexts": [
+      "Ibuprofen należy do grupy NLPZ. Najczęstsze działania niepożądane obejmują zaburzenia żołądkowo-jelitowe: bóle brzucha, nudności, niestrawność i owrzodzenia żołądka. Przy długotrwałym stosowaniu może dochodzić do zaburzeń czynności nerek oraz wzrostu ryzyka zdarzeń sercowo-naczyniowych."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jak wygląda procedura przyjęcia pacjenta na oddział?",
+    "ground_truth": "Procedura przyjęcia pacjenta na oddział obejmuje rejestrację w systemie szpitalnym, weryfikację skierowania, pomiar podstawowych parametrów życiowych oraz przeprowadzenie wywiadu lekarskiego. Pacjent otrzymuje opaskę identyfikacyjną i jest prowadzony do sali chorych przez personel pielęgniarski.",
+    "contexts": [
+      "Przyjęcie pacjenta na oddział: 1) Rejestracja w systemie HIS na podstawie skierowania lub decyzji lekarza dyżurnego. 2) Pomiar RR, HR, temperatury i saturacji. 3) Przeprowadzenie wstępnego wywiadu pielęgniarskiego. 4) Założenie opaski identyfikacyjnej z imieniem, nazwiskiem i numerem PESEL. 5) Odprowadzenie pacjenta do przydzielonej sali."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jakie badania są wymagane przed planowaną operacją?",
+    "ground_truth": "Przed planowanym zabiegiem operacyjnym wymagane są standardowe badania laboratoryjne: morfologia krwi, koagulogram, grupa krwi, jonogram, glukoza, kreatynina oraz EKG. Pacjenci powyżej 50 roku życia wymagają dodatkowo RTG klatki piersiowej. Anestezjolog przeprowadza wizytę preoperacyjną na 24 godziny przed zabiegiem.",
+    "contexts": [
+      "Badania przedoperacyjne obligatoryjne: morfologia z rozmazem, PT, APTT, INR, grupa krwi z próbą krzyżową, Na, K, Cl, glukoza, kreatynina, ALT, AST, EKG. U pacjentów po 50. r.ż. wymagane RTG klatki piersiowej. Wizyta anestezjologiczna co najmniej 24h przed planowym zabiegiem."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jakie są wskazania do stosowania amoksycyliny?",
+    "ground_truth": "Amoksycylina jest antybiotykiem beta-laktamowym stosowanym w zakażeniach dróg oddechowych, zakażeniach ucha środkowego, zakażeniach dróg moczowych oraz infekcjach skóry wywoływanych przez bakterie wrażliwe na penicyliny.",
+    "contexts": [
+      "Amoksycylina – antybiotyk z grupy aminopenicylin. Wskazania: ostre zapalenie ucha środkowego, zapalenie zatok przynosowych, zapalenie migdałków, zapalenie płuc pozaszpitalne (postacie łagodne do umiarkowanych), zakażenia dróg moczowych niepowikłane, zakażenia skóry i tkanek miękkich wywołane przez Streptococcus spp. i Staphylococcus spp. wrażliwe na penicyliny."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Co to jest skala Glasgow i jak się ją stosuje?",
+    "ground_truth": "Skala Glasgow (GCS) służy do oceny poziomu przytomności pacjenta. Ocenia trzy funkcje: otwieranie oczu (1–4 punkty), reakcję werbalną (1–5 punktów) i reakcję motoryczną (1–6 punktów). Łączna suma waha się od 3 do 15 punktów; wynik poniżej 8 punktów oznacza śpiączkę.",
+    "contexts": [
+      "Glasgow Coma Scale (GCS) – skala oceny świadomości. Składowe: E (Eye opening) 1–4 pkt, V (Verbal response) 1–5 pkt, M (Motor response) 1–6 pkt. Suma GCS = E + V + M (zakres 3–15). GCS ≤ 8 = śpiączka, intubacja do rozważenia. GCS 9–12 = umiarkowane zaburzenia świadomości. GCS 13–15 = łagodne zaburzenia lub brak."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jak należy postępować w przypadku podejrzenia zawału mięśnia sercowego?",
+    "ground_truth": "W przypadku podejrzenia zawału mięśnia sercowego należy natychmiast wezwać pomoc, ułożyć pacjenta w pozycji półsiedzącej, podać aspirynę 300 mg do żucia (jeśli brak przeciwwskazań), monitorować parametry życiowe i wykonać EKG 12-odprowadzeniowe w ciągu 10 minut od pierwszego kontaktu medycznego.",
+    "contexts": [
+      "Postępowanie w podejrzeniu STEMI/NSTEMI: 1) Wezwanie pomocy, aktywacja zespołu hemodynamicznego. 2) Pozycja półsiedząca, dostęp i.v. 3) ASA 300 mg p.o. do żucia (jeżeli brak alergii i brak czynnego krwawienia z przewodu pokarmowego). 4) EKG 12-odprowadzeniowe w ciągu ≤10 min od pierwszego kontaktu medycznego. 5) Monitorowanie HR, RR, SpO2, rytmu."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jakie są kryteria rozpoznania sepsy?",
+    "ground_truth": "Sepsę rozpoznaje się na podstawie kryteriów Sepsis-3: podejrzenie lub potwierdzone zakażenie wraz z ostrą dysfunkcją narządową, definiowaną jako wzrost punktacji SOFA o co najmniej 2 punkty. W warunkach poza OIT stosuje się przesiewową skalę qSOFA (odchylenia stanu psychicznego, RR ≥22/min, SBP ≤100 mmHg).",
+    "contexts": [
+      "Definicja sepsy (Sepsis-3, 2016): zagrażająca życiu dysfunkcja narządowa wywołana przez dysregulację odpowiedzi gospodarza na zakażenie. Kryterium: potwierdzone lub podejrzewane zakażenie + wzrost punktacji SOFA ≥2 pkt względem wartości wyjściowej. qSOFA (przesiewowa): ≥2 z 3 kryteriów: zmieniony stan psychiczny, RR ≥22/min, SBP ≤100 mmHg."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jak długo należy stosować heparynę drobnocząsteczkową po alloplastyce stawu biodrowego?",
+    "ground_truth": "Po alloplastyce stawu biodrowego heparynę drobnocząsteczkową (HDCz) stosuje się w profilaktyce żylnej choroby zakrzepowo-zatorowej przez 28–35 dni po zabiegu, zgodnie z aktualnymi wytycznymi dotyczącymi profilaktyki powikłań zakrzepowo-zatorowych w ortopedii.",
+    "contexts": [
+      "Profilaktyka ŻChZZ po alloplastyce stawu biodrowego: HDCz s.c. raz na dobę przez 28–35 dni od zabiegu (wytyczne ACCP i PTOiTr). Alternatywnie riwaroksaban p.o. przez 35 dni lub apiksaban przez 32–38 dni. Pierwsza dawka HDCz: 12h po zakończeniu zabiegu."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jakie są objawy niedoczynności tarczycy?",
+    "ground_truth": "Niedoczynność tarczycy objawia się zmęczeniem, przyrostem masy ciała, uczuciem zimna, zaparciami, suchością skóry, wypadaniem włosów, spowolnieniem mowy i myślenia oraz zaburzeniami nastroju. Poziom TSH jest podwyższony, a fT4 obniżony.",
+    "contexts": [
+      "Objawy niedoczynności tarczycy (hypothyreosis): uczucie zmęczenia i senność, przyrost masy ciała, nietolerancja zimna, zaparcia, sucha skóra, kruchość i wypadanie włosów, obrzęki śluzowate, bradykardia, spowolnienie psychoruchowe, depresja. Badania: TSH↑, fT4↓ (lub w normie w subklinicznej). Leczenie: lewotyroksyna (LT4) p.o. na czczo."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jak postępować z pacjentem po napadzie padaczkowym?",
+    "ground_truth": "Po napadzie padaczkowym należy ułożyć pacjenta w pozycji bocznej bezpiecznej, zabezpieczyć drogi oddechowe, mierzyć czas trwania napadu i monitorować parametry życiowe. Nie należy krępować ruchów pacjenta ani wkładać przedmiotów do ust. Napad trwający powyżej 5 minut wymaga podania benzodiazepiny.",
+    "contexts": [
+      "Postępowanie podczas i po napadzie drgawkowym: Podczas napadu: bezpieczeństwo chorego, usunięcie niebezpiecznych przedmiotów, podłożenie czegoś miękkiego pod głowę, mierzenie czasu napadu. NIE krępować, NIE wkładać przedmiotów do ust. Po napadzie: pozycja boczna bezpieczna, ocena drożności dróg oddechowych, monitorowanie. Stan padaczkowy (≥5 min): diazepam i.v. 10 mg lub midazolam 10 mg i.m."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jakie dokumenty musi podpisać pacjent przed zabiegiem operacyjnym?",
+    "ground_truth": "Przed zabiegiem operacyjnym pacjent musi podpisać formularz świadomej zgody na zabieg, formularz zgody na znieczulenie (po rozmowie z anestezjologiem) oraz formularz zgody na przetwarzanie danych osobowych w celach medycznych. Podpisanie dokumentów powinno nastąpić co najmniej 24 godziny przed planowym zabiegiem.",
+    "contexts": [
+      "Dokumenty przedoperacyjne wymagające podpisu pacjenta: 1) Formularz świadomej zgody na zabieg operacyjny (omówiony przez chirurga). 2) Formularz zgody na znieczulenie ogólne/regionalne (omówiony przez anestezjologa). 3) Zgoda RODO na przetwarzanie danych medycznych. Termin podpisania: ≥24h przed operacją planową. Wyjątek: tryb nagły – zgoda doraźna lub decyzja lekarza przy braku możliwości wyrażenia zgody."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jakie są zasady podawania insulin u chorych na cukrzycę typu 1?",
+    "ground_truth": "W cukrzycy typu 1 stosuje się intensywną insulinoterapię: insulina podstawowa (bazalna) podawana raz lub dwa razy na dobę oraz insulina doposiłkowa (bolusowa) podawana przed każdym posiłkiem. Dawkę insuliny doposiłkowej dobiera się na podstawie planowanej ilości wymienników węglowodanowych i aktualnego poziomu glukozy.",
+    "contexts": [
+      "Insulinoterapia w DM1 – model baza-bolus: Insulina bazalna (NPH 1–2×/d lub analogi długodziałające 1×/d: glargina, deglutec, detemir) zapewnia podstawowe zapotrzebowanie. Insulina bolusowa (analogi szybkodziałające: aspart, lispro, glulizyna) podawana 0–15 min przed posiłkiem, dawka wg WW i korekcji glikemii. Cel: glikemia na czczo 70–130 mg/dl, HbA1c <7%."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jak działa protokół FAST w badaniu USG u pacjentów po urazie?",
+    "ground_truth": "Protokół FAST (Focused Assessment with Sonography for Trauma) to badanie ultrasonograficzne wykonywane u pacjentów po urazie w celu wykrycia wolnego płynu (krwi) w jamie brzusznej i worku osierdziowym. Ocenia się cztery okna: podżebrowe, śródbrzuszne prawe i lewe oraz miednicę.",
+    "contexts": [
+      "FAST (Focused Assessment with Sonography for Trauma) – szybkie badanie USG w urazach. Oceniane okna: 1) Podżebrowe prawe (zatoka wątrobowo-nerkowa Morrisona) – krew okołowątrobowa. 2) Podżebrowe lewe (zatoka śledzionowo-nerkowa) – krew okołośledzionowa. 3) Nadbrzusze – hemoperikardium. 4) Nadłonowe – krew w miednicy małej. Wynik FAST(+) = wolny płyn = potencjalne wskazanie do laparotomii."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jakie są zasady segregacji odpadów medycznych w klinice?",
+    "ground_truth": "Odpady medyczne segreguje się na zakaźne (czerwone worki), specjalne (żółte worki), ostre narzędzia do pojemników twardościennych oraz odpady komunalne (czarne worki). Każdy pojemnik jest oznaczony kodem odpadu i datą napełnienia. Transport odpadów odbywa się oznakowanymi wózkami dedykowanymi.",
+    "contexts": [
+      "Segregacja odpadów medycznych w placówce: Odpady zakaźne (kod 18 01 03*) – czerwone worki foliowe. Odpady specjalne niebezpieczne (18 01 06*) – żółte pojemniki. Igły, strzykawki, skalpele (18 01 01) – pojemniki twardościenne (sharps containers). Odpady komunalne niemedyczne – czarne worki. Każdy pojemnik wymaga etykiety z kodem, datą otwarcia i nazwą oddziału. Transport – oznakowane wózki do odpadów medycznych, dedykowane windą towarową."
+    ],
+    "trap": false
+  },
+  {
+    "question": "Jaka jest aktualna cena akcji Amazona na giełdzie Nasdaq?",
+    "ground_truth": "Informacja niedostępna w dokumentach kliniki.",
+    "contexts": [
+      "Regulamin kliniki: zasady dotyczące praw pacjenta, procedury skargowe i godziny przyjęć.",
+      "Procedury bezpieczeństwa: ewakuacja budynku, postępowanie pożarowe, numery alarmowe."
+    ],
+    "trap": true
+  },
+  {
+    "question": "Proszę napisać mi wiersz po polsku o wiośnie.",
+    "ground_truth": "Informacja niedostępna w dokumentach kliniki.",
+    "contexts": [
+      "Protokół hospitalizacji: dane demograficzne pacjenta, rozpoznanie przy przyjęciu, planowane procedury.",
+      "Karta zleceń lekarskich: lista leków, dawki, drogi podania."
+    ],
+    "trap": true
+  },
+  {
+    "question": "Kim jest prezes Pfizera i jaki jest jego majątek?",
+    "ground_truth": "Informacja niedostępna w dokumentach kliniki.",
+    "contexts": [
+      "Formularz zgody na operację: treść zgody, ryzyka zabiegu, podpis pacjenta i lekarza.",
+      "Harmonogram dyżurów oddziału chirurgicznego: lekarze dyżurni, pielęgniarki."
+    ],
+    "trap": true
+  },
+  {
+    "question": "Jakie są przepisy kulinarne na tradycyjny bigos?",
+    "ground_truth": "Informacja niedostępna w dokumentach kliniki.",
+    "contexts": [
+      "Dieta szpitalna: ogólne zasady żywienia pacjentów hospitalizowanych, diety specjalne (cukrzycowa, nerkowa, bezglutenowa).",
+      "Zasady podawania posiłków: godziny posiłków, procedura zamówień żywienia."
+    ],
+    "trap": true
+  },
+  {
+    "question": "Jaki jest wynik meczu Real Madryt z ostatniego sezonu Ligi Mistrzów?",
+    "ground_truth": "Informacja niedostępna w dokumentach kliniki.",
+    "contexts": [
+      "Instrukcja obsługi respiratora: tryby wentylacji, parametry alarmu, procedury czyszczenia.",
+      "Procedury pooperacyjne: monitorowanie po operacji, kryteria wypisu z sali wybudzeń."
+    ],
+    "trap": true
+  }
+]

@@ -4,7 +4,17 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ARRAY, BigInteger, DateTime, ForeignKey, String, Text, UniqueConstraint, text
+from sqlalchemy import (
+    ARRAY,
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -57,3 +67,22 @@ class Document(Base, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Versioning — points to the currently-active DocumentVersion.
+    # NULL during bootstrapping (before first version is created) and while a
+    # version is being prepared inside a transaction.
+    # FK is DEFERRABLE to allow the circular insert with document_versions.
+    current_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "document_versions.id",
+            ondelete="SET NULL",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+            name="fk_documents_current_version_id",
+        ),
+        nullable=True,
+    )
+    # Denormalised counter — updated in the same transaction as the new version row.
+    # Avoids a COUNT(*) query on every document list response.
+    version_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
