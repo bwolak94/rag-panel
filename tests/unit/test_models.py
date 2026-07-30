@@ -31,23 +31,38 @@ from src.db.models import (
 # ------------------------------------------------------------------ #
 
 ALL_MODELS = [
-    Tenant, User, UserTenant, Role, Permission, RolePermission, UserRole,
-    Collection, CollectionAccess, Document, IngestionJob, ChunksRegistry,
-    ModelsRegistry, RagPipeline, Conversation, Message, MessageSource,
-    Feedback, AuditLog,
+    Tenant,
+    User,
+    UserTenant,
+    Role,
+    Permission,
+    RolePermission,
+    UserRole,
+    Collection,
+    CollectionAccess,
+    Document,
+    IngestionJob,
+    ChunksRegistry,
+    ModelsRegistry,
+    RagPipeline,
+    Conversation,
+    Message,
+    MessageSource,
+    Feedback,
+    AuditLog,
 ]
 
 # Tables intentionally exempted from the `tenant_id` requirement (per data model spec).
 TENANT_ID_EXEMPTIONS = {
-    "tenants",            # root entity — is the tenant
-    "users",              # global identity table
-    "user_tenants",       # join table; no business data
-    "user_roles",         # join table
-    "message_sources",    # derives tenant via messages → conversations
-    "messages",           # derives tenant via conversations
+    "tenants",  # root entity — is the tenant
+    "users",  # global identity table
+    "user_tenants",  # join table; no business data
+    "user_roles",  # join table
+    "message_sources",  # derives tenant via messages → conversations
+    "messages",  # derives tenant via conversations
     "collection_access",  # derives tenant via collections
-    "permissions",        # global permission dictionary
-    "role_permissions",   # join table
+    "permissions",  # global permission dictionary
+    "role_permissions",  # join table
 }
 
 
@@ -65,6 +80,7 @@ def _unique_constraints(model: type) -> list:
 # Tenant isolation                                                      #
 # ------------------------------------------------------------------ #
 
+
 @pytest.mark.parametrize("model", ALL_MODELS)
 def test_business_tables_have_tenant_id(model: type) -> None:
     table_name = model.__tablename__  # type: ignore[attr-defined]
@@ -78,6 +94,7 @@ def test_business_tables_have_tenant_id(model: type) -> None:
 # ------------------------------------------------------------------ #
 # users — intentionally has NO tenant_id                               #
 # ------------------------------------------------------------------ #
+
 
 def test_user_has_no_tenant_id() -> None:
     assert "tenant_id" not in _column_names(User), (
@@ -99,6 +116,7 @@ def test_user_keycloak_sub_unique() -> None:
 # audit_log — no updated_at (append-only)                              #
 # ------------------------------------------------------------------ #
 
+
 def test_audit_log_has_no_updated_at() -> None:
     assert "updated_at" not in _column_names(AuditLog), (
         "audit_log must not have updated_at — it is append-only"
@@ -112,6 +130,7 @@ def test_audit_log_has_created_at() -> None:
 # ------------------------------------------------------------------ #
 # Document — (tenant_id, sha256) unique constraint                     #
 # ------------------------------------------------------------------ #
+
 
 def test_document_sha256_unique_per_tenant() -> None:
     table = Document.__table__
@@ -129,6 +148,7 @@ def test_document_sha256_unique_per_tenant() -> None:
 # ChunksRegistry — qdrant_point_id unique                              #
 # ------------------------------------------------------------------ #
 
+
 def test_chunks_registry_qdrant_point_id_unique() -> None:
     table = ChunksRegistry.__table__
     for col in table.columns:
@@ -142,12 +162,10 @@ def test_chunks_registry_qdrant_point_id_unique() -> None:
 # CollectionAccess — check constraint on access_level                  #
 # ------------------------------------------------------------------ #
 
+
 def test_collection_access_level_check_constraint() -> None:
     table = CollectionAccess.__table__
-    check_names = [
-        c.name for c in table.constraints
-        if c.__class__.__name__ == "CheckConstraint"
-    ]
+    check_names = [c.name for c in table.constraints if c.__class__.__name__ == "CheckConstraint"]
     assert "ck_collection_access_level" in check_names
 
 
@@ -155,12 +173,10 @@ def test_collection_access_level_check_constraint() -> None:
 # Message — check constraint on role                                   #
 # ------------------------------------------------------------------ #
 
+
 def test_message_role_check_constraint() -> None:
     table = Message.__table__
-    check_names = [
-        c.name for c in table.constraints
-        if c.__class__.__name__ == "CheckConstraint"
-    ]
+    check_names = [c.name for c in table.constraints if c.__class__.__name__ == "CheckConstraint"]
     assert "ck_messages_role" in check_names
 
 
@@ -168,12 +184,10 @@ def test_message_role_check_constraint() -> None:
 # Feedback — check constraint on rating + unique(message_id, user_id) #
 # ------------------------------------------------------------------ #
 
+
 def test_feedback_rating_check_constraint() -> None:
     table = Feedback.__table__
-    check_names = [
-        c.name for c in table.constraints
-        if c.__class__.__name__ == "CheckConstraint"
-    ]
+    check_names = [c.name for c in table.constraints if c.__class__.__name__ == "CheckConstraint"]
     assert "ck_feedback_rating" in check_names
 
 
@@ -191,14 +205,29 @@ def test_feedback_unique_message_user() -> None:
 # Base metadata — all models registered                                #
 # ------------------------------------------------------------------ #
 
+
 def test_all_models_registered_in_base_metadata() -> None:
     table_names = set(Base.metadata.tables.keys())
     expected = {
-        "tenants", "users", "user_tenants", "roles", "permissions",
-        "role_permissions", "user_roles", "collections", "collection_access",
-        "documents", "ingestion_jobs", "chunks_registry", "models_registry",
-        "rag_pipelines", "conversations", "messages", "message_sources",
-        "feedback", "audit_log",
+        "tenants",
+        "users",
+        "user_tenants",
+        "roles",
+        "permissions",
+        "role_permissions",
+        "user_roles",
+        "collections",
+        "collection_access",
+        "documents",
+        "ingestion_jobs",
+        "chunks_registry",
+        "models_registry",
+        "rag_pipelines",
+        "conversations",
+        "messages",
+        "message_sources",
+        "feedback",
+        "audit_log",
     }
     missing = expected - table_names
     assert not missing, f"Tables missing from Base.metadata: {missing}"
@@ -207,6 +236,7 @@ def test_all_models_registered_in_base_metadata() -> None:
 # ------------------------------------------------------------------ #
 # MessageSource — no tenant_id (exempt)                                #
 # ------------------------------------------------------------------ #
+
 
 def test_message_source_has_no_tenant_id() -> None:
     assert "tenant_id" not in _column_names(MessageSource), (
@@ -217,6 +247,7 @@ def test_message_source_has_no_tenant_id() -> None:
 # ------------------------------------------------------------------ #
 # ON DELETE behaviour spot-checks                                       #
 # ------------------------------------------------------------------ #
+
 
 def test_document_uploaded_by_set_null_on_delete() -> None:
     """uploaded_by must be SET NULL (not CASCADE) — GDPR: preserve doc, anonymise uploader."""

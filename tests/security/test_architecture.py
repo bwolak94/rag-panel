@@ -57,6 +57,4 @@ def test_no_qdrant_client_outside_retrieval_module() -> None:
                         violations.append(file_str)
                         break
 
-    assert not violations, (
-        f"qdrant_client imported outside src/retrieval/ in: {violations}"
-    )
+    assert not violations, f"qdrant_client imported outside src/retrieval/ in: {violations}"

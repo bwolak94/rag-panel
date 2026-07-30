@@ -84,9 +84,7 @@ class TenantService:
         )
         return TenantResponse.model_validate(tenant)
 
-    async def delete_tenant(
-        self, tenant_id: uuid.UUID, ctx: UserContext, ip: str | None
-    ) -> None:
+    async def delete_tenant(self, tenant_id: uuid.UUID, ctx: UserContext, ip: str | None) -> None:
         tenant = await self._repo.get_by_id(tenant_id)
         if tenant is None:
             raise NotFoundError("Tenant not found")

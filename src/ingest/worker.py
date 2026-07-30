@@ -174,9 +174,7 @@ class IngestWorker:
                 WORKER_HEARTBEAT.labels(worker_id=self._worker_id).set(ts)
                 heartbeat_failures = 0
             except Exception as exc:
-                logger.error(
-                    "heartbeat_error", error=str(exc), worker_id=self._worker_id
-                )
+                logger.error("heartbeat_error", error=str(exc), worker_id=self._worker_id)
                 heartbeat_failures += 1
                 if heartbeat_failures >= 3 and parent_task is not None:
                     parent_task.cancel()

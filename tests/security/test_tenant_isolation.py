@@ -185,13 +185,14 @@ class TestTenantAPIIsolation:
         updated_member = {**existing_member, "role": "viewer"}
 
         with (
-            patch.object(svc._repo, "get_member_with_role",
-                         AsyncMock(side_effect=[existing_member, updated_member])),
+            patch.object(
+                svc._repo,
+                "get_member_with_role",
+                AsyncMock(side_effect=[existing_member, updated_member]),
+            ),
             patch.object(svc._repo, "assign_role", AsyncMock()),
             patch.object(svc._audit, "log", AsyncMock()),
-            patch(
-                "src.domain.tenant_service.invalidate_user_context_cache"
-            ) as mock_invalidate,
+            patch("src.domain.tenant_service.invalidate_user_context_cache") as mock_invalidate,
         ):
             body = AssignRoleRequest(role="viewer")
             result = await svc.assign_role(tenant_id, user_id, body, ctx, ip=None)

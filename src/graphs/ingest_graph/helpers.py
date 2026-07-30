@@ -73,9 +73,7 @@ async def get_model(session: AsyncSession, model_id: uuid.UUID) -> ModelsRegistr
     """Fetch a model record by ID. Raises ValueError if not found."""
     from sqlalchemy import select
 
-    result = await session.execute(
-        select(ModelsRegistry).where(ModelsRegistry.id == model_id)
-    )
+    result = await session.execute(select(ModelsRegistry).where(ModelsRegistry.id == model_id))
     model = result.scalar_one_or_none()
     if model is None:
         raise ValueError(f"Model {model_id} not found")

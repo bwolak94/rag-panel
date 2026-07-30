@@ -121,9 +121,7 @@ class CollectionService:
             description=body.description,
             chunk_config=body.chunk_config.model_dump() if body.chunk_config is not None else None,
             validation_config=(
-                body.validation_config.model_dump()
-                if body.validation_config is not None
-                else None
+                body.validation_config.model_dump() if body.validation_config is not None else None
             ),
             is_active=body.is_active,
         )

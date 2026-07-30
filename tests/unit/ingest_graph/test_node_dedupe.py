@@ -50,9 +50,7 @@ async def test_unique_document_returns_empty() -> None:
     session = _make_session(None)
     state = _make_state()
 
-    with patch(
-        "src.graphs.ingest_graph.nodes.node_dedupe.update_step", new=AsyncMock()
-    ):
+    with patch("src.graphs.ingest_graph.nodes.node_dedupe.update_step", new=AsyncMock()):
         result = await node_dedupe(state, _make_config(session))
 
     assert result == {}
@@ -64,9 +62,7 @@ async def test_duplicate_detected_halts() -> None:
     session = _make_session(OTHER_DOCUMENT_ID)
     state = _make_state()
 
-    with patch(
-        "src.graphs.ingest_graph.nodes.node_dedupe.update_step", new=AsyncMock()
-    ):
+    with patch("src.graphs.ingest_graph.nodes.node_dedupe.update_step", new=AsyncMock()):
         result = await node_dedupe(state, _make_config(session))
 
     assert result["status"] == "rejected"
@@ -79,9 +75,7 @@ async def test_duplicate_updates_document_status() -> None:
     session = _make_session(OTHER_DOCUMENT_ID)
     state = _make_state()
 
-    with patch(
-        "src.graphs.ingest_graph.nodes.node_dedupe.update_step", new=AsyncMock()
-    ):
+    with patch("src.graphs.ingest_graph.nodes.node_dedupe.update_step", new=AsyncMock()):
         await node_dedupe(state, _make_config(session))
 
     # execute called twice: SELECT for duplicate check + UPDATE for status

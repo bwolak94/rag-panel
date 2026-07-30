@@ -84,9 +84,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(QdrantUnavailableError)
-    async def qdrant_unavailable_handler(
-        req: Request, exc: QdrantUnavailableError
-    ) -> JSONResponse:
+    async def qdrant_unavailable_handler(req: Request, exc: QdrantUnavailableError) -> JSONResponse:
         return JSONResponse(
             status_code=503,
             content={"detail": "Vector store unavailable, please try again later"},

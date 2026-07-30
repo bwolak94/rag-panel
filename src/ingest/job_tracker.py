@@ -17,9 +17,7 @@ from src.db.models.ingestion_job import IngestionJob
 
 
 class JobTracker:
-    def __init__(
-        self, session: AsyncSession, job_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> None:
+    def __init__(self, session: AsyncSession, job_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
         self._session = session
         self._job_id = job_id
         self._tenant_id = tenant_id
@@ -68,8 +66,9 @@ class JobTracker:
     async def fail_stage(self, stage: str, error: str) -> None:
         """Mark last step as failed and increment retry_count."""
         result = await self._session.execute(
-            select(IngestionJob.steps, IngestionJob.retry_count)
-            .where(IngestionJob.id == self._job_id)
+            select(IngestionJob.steps, IngestionJob.retry_count).where(
+                IngestionJob.id == self._job_id
+            )
         )
         row = result.one()
         steps: list[dict[str, Any]] = list(row.steps or [])

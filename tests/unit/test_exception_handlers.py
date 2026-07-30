@@ -143,9 +143,7 @@ async def test_conversation_not_found_returns_404_with_code(exc_client: AsyncCli
 
     app2.include_router(r2)
 
-    async with _AsyncClient(
-        transport=ASGITransport(app=app2), base_url="http://test"
-    ) as client:
+    async with _AsyncClient(transport=ASGITransport(app=app2), base_url="http://test") as client:
         resp = await client.get("/raise/conversation-not-found")
 
     assert resp.status_code == 404

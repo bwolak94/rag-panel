@@ -103,9 +103,7 @@ async def test_list_models_returns_200() -> None:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test", follow_redirects=True
         ) as c:
-            resp = await c.get(
-                "/api/v1/models/", headers={"Authorization": "Bearer fake"}
-            )
+            resp = await c.get("/api/v1/models/", headers={"Authorization": "Bearer fake"})
 
     assert resp.status_code == 200
     data = resp.json()

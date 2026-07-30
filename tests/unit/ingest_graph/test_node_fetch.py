@@ -64,9 +64,7 @@ async def test_fetch_success() -> None:
     minio = _make_minio(RAW_BYTES)
     state = _make_state()
 
-    with patch(
-        "src.graphs.ingest_graph.nodes.node_fetch.update_step", new=AsyncMock()
-    ):
+    with patch("src.graphs.ingest_graph.nodes.node_fetch.update_step", new=AsyncMock()):
         result = await node_fetch(state, _make_config(session, minio))
 
     assert result["raw_bytes"] == RAW_BYTES
@@ -135,9 +133,7 @@ async def test_fetch_empty_sha256_skips_verification() -> None:
     minio = _make_minio(RAW_BYTES)
     state = _make_state()
 
-    with patch(
-        "src.graphs.ingest_graph.nodes.node_fetch.update_step", new=AsyncMock()
-    ):
+    with patch("src.graphs.ingest_graph.nodes.node_fetch.update_step", new=AsyncMock()):
         result = await node_fetch(state, _make_config(session, minio))
 
     assert result["sha256"] == SHA256

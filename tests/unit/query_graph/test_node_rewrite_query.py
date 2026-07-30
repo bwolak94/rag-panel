@@ -79,9 +79,7 @@ async def test_valid_rewrite_returned_in_result() -> None:
     db = _make_db(model_record)
     llm = AsyncMock()
     llm.chat_completion = AsyncMock(
-        return_value=_make_llm_response(
-            "dokumenty wymagane wizyta lekarska rejestracja poradnia"
-        )
+        return_value=_make_llm_response("dokumenty wymagane wizyta lekarska rejestracja poradnia")
     )
 
     state = _make_state("Jakie dokumenty potrzebne są do wizyty?")
@@ -318,9 +316,7 @@ async def test_llm_called_with_json_response_format() -> None:
     db = _make_db(model_record)
 
     llm = AsyncMock()
-    llm.chat_completion = AsyncMock(
-        return_value=_make_llm_response("procedury przyjęcia pacjenta")
-    )
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response("procedury przyjęcia pacjenta"))
 
     state = _make_state()
     await node_rewrite_query(state, _make_config(llm, db))

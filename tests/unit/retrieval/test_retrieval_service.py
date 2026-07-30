@@ -32,7 +32,9 @@ def make_ctx(
 ) -> TenantContext:
     return TenantContext(
         tenant_id=tenant_id,
-        allowed_collection_ids=allowed_collection_ids if allowed_collection_ids is not None else [COLLECTION_ID],
+        allowed_collection_ids=(
+            allowed_collection_ids if allowed_collection_ids is not None else [COLLECTION_ID]
+        ),
     )
 
 

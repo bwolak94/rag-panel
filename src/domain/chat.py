@@ -119,16 +119,20 @@ class ChatService:
         retrieval = await self._build_retrieval_service()
 
         # Invoke the real LangGraph query graph
-        answer, citation_dicts, no_results, prompt_tokens, completion_tokens = (
-            await self._invoke_graph(
-                question=question,
-                pipeline=pipeline,
-                ctx=ctx,
-                db=db,
-                llm=llm,
-                retrieval=retrieval,
-                conversation_history=conversation_history,
-            )
+        (
+            answer,
+            citation_dicts,
+            no_results,
+            prompt_tokens,
+            completion_tokens,
+        ) = await self._invoke_graph(
+            question=question,
+            pipeline=pipeline,
+            ctx=ctx,
+            db=db,
+            llm=llm,
+            retrieval=retrieval,
+            conversation_history=conversation_history,
         )
 
         # Convert citation dicts to MessageSourceOut schemas

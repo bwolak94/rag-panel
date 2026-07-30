@@ -125,10 +125,12 @@ async def test_fail_stage_truncates_error_at_2000_chars() -> None:
             captured_steps.extend(stmt._values.get("steps", []))
         return result
 
-    session.execute = AsyncMock(side_effect=[
-        MagicMock(**{"one.return_value": row}),
-        MagicMock(),
-    ])
+    session.execute = AsyncMock(
+        side_effect=[
+            MagicMock(**{"one.return_value": row}),
+            MagicMock(),
+        ]
+    )
 
     tracker = JobTracker(session, JOB_ID, TENANT_ID)
 

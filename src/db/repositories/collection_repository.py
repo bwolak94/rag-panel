@@ -18,9 +18,7 @@ class CollectionRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get_by_id(
-        self, collection_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> Collection | None:
+    async def get_by_id(self, collection_id: uuid.UUID, tenant_id: uuid.UUID) -> Collection | None:
         """Always filters by tenant_id — never returns cross-tenant data."""
         q = select(Collection).where(
             Collection.id == collection_id,
@@ -73,9 +71,7 @@ class CollectionRepository:
         )
         model = (await self._session.execute(model_q)).scalar_one_or_none()
         if model is None:
-            raise NotFoundError(
-                "Embedding model not found or is not an active embedding model"
-            )
+            raise NotFoundError("Embedding model not found or is not an active embedding model")
 
         # Enforce name uniqueness within tenant
         name_q = select(Collection).where(
@@ -116,9 +112,7 @@ class CollectionRepository:
                 Collection.id != collection.id,
             )
             if (await self._session.execute(name_q)).scalar_one_or_none() is not None:
-                raise ConflictError(
-                    f"Collection '{name}' already exists in this tenant"
-                )
+                raise ConflictError(f"Collection '{name}' already exists in this tenant")
             collection.name = name
         if description is not None:
             collection.description = description
@@ -131,13 +125,15 @@ class CollectionRepository:
         await self._session.flush()
         return collection
 
-    async def count_documents(
-        self, collection_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> int:
-        q = select(func.count()).select_from(Document).where(
-            Document.collection_id == collection_id,
-            Document.tenant_id == tenant_id,
-            Document.status != "deleted",
+    async def count_documents(self, collection_id: uuid.UUID, tenant_id: uuid.UUID) -> int:
+        q = (
+            select(func.count())
+            .select_from(Document)
+            .where(
+                Document.collection_id == collection_id,
+                Document.tenant_id == tenant_id,
+                Document.status != "deleted",
+            )
         )
         return (await self._session.execute(q)).scalar_one()
 

@@ -30,9 +30,7 @@ class DocumentRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def check_duplicate(
-        self, tenant_id: uuid.UUID, sha256: str
-    ) -> Document | None:
+    async def check_duplicate(self, tenant_id: uuid.UUID, sha256: str) -> Document | None:
         """Returns existing document if SHA-256 already exists for this tenant."""
         q = select(Document).where(
             Document.tenant_id == tenant_id,
@@ -81,9 +79,7 @@ class DocumentRepository:
         await self._session.flush()
         return doc, job
 
-    async def get_by_id(
-        self, document_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> Document | None:
+    async def get_by_id(self, document_id: uuid.UUID, tenant_id: uuid.UUID) -> Document | None:
         q = select(Document).where(
             Document.id == document_id,
             Document.tenant_id == tenant_id,
@@ -104,9 +100,13 @@ class DocumentRepository:
             Document.tenant_id == tenant_id,
             Document.status != "deleted",
         )
-        count_q = select(func.count()).select_from(Document).where(
-            Document.tenant_id == tenant_id,
-            Document.status != "deleted",
+        count_q = (
+            select(func.count())
+            .select_from(Document)
+            .where(
+                Document.tenant_id == tenant_id,
+                Document.status != "deleted",
+            )
         )
 
         if collection_id is not None:
@@ -129,9 +129,7 @@ class DocumentRepository:
         )
         await self._session.flush()
 
-    async def soft_delete(
-        self, document_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> None:
+    async def soft_delete(self, document_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
         await self.update_status(document_id, tenant_id, "deleted")
 
     async def list_needs_review(

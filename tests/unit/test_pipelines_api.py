@@ -110,9 +110,7 @@ async def test_list_pipelines_returns_200() -> None:
         return_value=mock_response,
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            resp = await c.get(
-                "/api/v1/pipelines/", headers={"Authorization": "Bearer fake"}
-            )
+            resp = await c.get("/api/v1/pipelines/", headers={"Authorization": "Bearer fake"})
 
     assert resp.status_code == 200
     data = resp.json()

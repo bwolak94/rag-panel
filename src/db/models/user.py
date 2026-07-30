@@ -20,11 +20,7 @@ class User(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    keycloak_sub: Mapped[str] = mapped_column(
-        String(255), nullable=False, unique=True, index=True
-    )
+    keycloak_sub: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     display_name: Mapped[str | None] = mapped_column(String(255))
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("true")
-    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))

@@ -139,9 +139,7 @@ class AuthRepository:
                 Role.tenant_id == tenant_id,
             )
         )
-        permission_codes: list[str] = list(
-            (await self._session.execute(perm_q)).scalars().all()
-        )
+        permission_codes: list[str] = list((await self._session.execute(perm_q)).scalars().all())
 
         # Fetch role names
         role_q = (

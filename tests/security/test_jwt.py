@@ -95,9 +95,7 @@ class TestJWTVerification:
             "aud": "rag-api",
             "exp": int(time.time()) + 3600,
         }
-        payload_b64 = base64.urlsafe_b64encode(
-            json.dumps(payload_data).encode()
-        ).rstrip(b"=")
+        payload_b64 = base64.urlsafe_b64encode(json.dumps(payload_data).encode()).rstrip(b"=")
         none_token = f"{header.decode()}.{payload_b64.decode()}."
 
         # Must raise JWTError — not a catch-all Exception
@@ -161,9 +159,7 @@ class TestJWTVerification:
         claims = verify_token(token, [other_jwk, public_jwk])
         assert claims["sub"] == "kc-user"
 
-    def test_future_iat_handled_gracefully(
-        self, rsa_keypair: tuple[str, dict[str, Any]]
-    ) -> None:
+    def test_future_iat_handled_gracefully(self, rsa_keypair: tuple[str, dict[str, Any]]) -> None:
         """Token with iat in the future is accepted — jose does not reject future iat."""
         private_pem, public_jwk = rsa_keypair
         token = make_token(private_pem, iat=int(time.time()) + 60)
