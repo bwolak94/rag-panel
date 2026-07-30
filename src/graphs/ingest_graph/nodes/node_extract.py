@@ -46,7 +46,7 @@ _TEXT_MIMES = frozenset(["text/plain", "text/markdown"])
 def _extract_with_docling(raw: bytes, mime: str) -> tuple[str, list[Section]]:
     """Run Docling synchronously (called from executor)."""
     try:
-        from docling.document_converter import DocumentConverter
+        from docling.document_converter import DocumentConverter  # type: ignore[import-not-found]
     except ImportError:
         return _extract_plain(raw)
 
@@ -122,9 +122,7 @@ async def node_extract(state: IngestState, config: dict[str, Any]) -> dict[str, 
 
         loop = asyncio.get_running_loop()
         if mime in _TEXT_MIMES:
-            full_text, sections = await loop.run_in_executor(
-                None, _extract_plain, state.raw_bytes
-            )
+            full_text, sections = await loop.run_in_executor(None, _extract_plain, state.raw_bytes)
         else:
             full_text, sections = await loop.run_in_executor(
                 None, _extract_with_docling, state.raw_bytes, mime

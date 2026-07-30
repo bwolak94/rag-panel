@@ -184,9 +184,7 @@ async def _stub_response(body: ChatCompletionRequest) -> ChatCompletionResponse 
     )
 
 
-async def _stub_stream(
-    message_id: str, conversation_id: str
-) -> AsyncGenerator[str, None]:
+async def _stub_stream(message_id: str, conversation_id: str) -> AsyncGenerator[str, None]:
     chunk = {
         "id": message_id,
         "object": "chat.completion.chunk",

@@ -53,14 +53,10 @@ class TosAcceptance(Base):
         ForeignKey("tos_versions.id"),
         nullable=False,
     )
-    accepted_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=text("now()")
-    )
+    accepted_at: Mapped[datetime] = mapped_column(nullable=False, server_default=text("now()"))
     ip_address: Mapped[str] = mapped_column(String(45), nullable=False)
     user_agent: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=text("now()")
-    )
+    created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=text("now()"))
 
     # Relationships (lazy="raise" prevents accidental N+1)
     tos_version: Mapped[TosVersion] = relationship(  # type: ignore[name-defined]  # noqa: F821

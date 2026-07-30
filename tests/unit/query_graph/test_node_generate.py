@@ -147,9 +147,7 @@ async def test_normal_generation_returns_answer_and_citations() -> None:
         return_value=_make_llm_response(llm_json, prompt_tokens=200, completion_tokens=80)
     )
 
-    with patch(
-        "src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT
-    ):
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
         result = await node_generate(state, _make_config(llm, db))
 
     assert result["answer"] == "Pacjent wypełnia formularz."
@@ -184,9 +182,7 @@ async def test_citation_mapping_populates_correct_fields() -> None:
     llm = AsyncMock()
     llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
 
-    with patch(
-        "src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT
-    ):
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
         result = await node_generate(state, _make_config(llm, db))
 
     assert len(result["citations"]) == 1
@@ -217,9 +213,7 @@ async def test_invalid_chunk_index_citation_is_skipped() -> None:
     llm = AsyncMock()
     llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
 
-    with patch(
-        "src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT
-    ):
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
         result = await node_generate(state, _make_config(llm, db))
 
     # Only the valid citation at index 1 survives
@@ -239,9 +233,7 @@ async def test_zero_chunk_index_citation_is_skipped() -> None:
     llm = AsyncMock()
     llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
 
-    with patch(
-        "src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT
-    ):
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
         result = await node_generate(state, _make_config(llm, db))
 
     assert result["citations"] == []
@@ -260,9 +252,7 @@ async def test_json_without_answer_key_defaults_to_empty_string() -> None:
     llm = AsyncMock()
     llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
 
-    with patch(
-        "src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT
-    ):
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
         result = await node_generate(state, _make_config(llm, db))
 
     assert result["answer"] == ""
@@ -278,13 +268,12 @@ async def test_invalid_json_raises_query_node_error() -> None:
     model_record = _make_model_record()
     db = _make_db(model_record)
     llm = AsyncMock()
-    llm.chat_completion = AsyncMock(
-        return_value=_make_llm_response("To nie jest JSON {broken")
-    )
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response("To nie jest JSON {broken"))
 
-    with patch(
-        "src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT
-    ), pytest.raises(QueryNodeError, match="generate_parse_error"):
+    with (
+        patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT),
+        pytest.raises(QueryNodeError, match="generate_parse_error"),
+    ):
         await node_generate(state, _make_config(llm, db))
 
 
@@ -298,9 +287,10 @@ async def test_llm_generic_exception_raises_query_node_error() -> None:
     llm = AsyncMock()
     llm.chat_completion = AsyncMock(side_effect=RuntimeError("connection refused"))
 
-    with patch(
-        "src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT
-    ), pytest.raises(QueryNodeError, match="generate_llm_error"):
+    with (
+        patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT),
+        pytest.raises(QueryNodeError, match="generate_llm_error"),
+    ):
         await node_generate(state, _make_config(llm, db))
 
 
@@ -336,9 +326,7 @@ async def test_token_counts_extracted_from_response_usage() -> None:
         return_value=_make_llm_response(llm_json, prompt_tokens=512, completion_tokens=128)
     )
 
-    with patch(
-        "src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT
-    ):
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
         result = await node_generate(state, _make_config(llm, db))
 
     assert result["prompt_tokens"] == 512
@@ -363,9 +351,7 @@ async def test_missing_usage_defaults_token_counts_to_zero() -> None:
     llm = AsyncMock()
     llm.chat_completion = AsyncMock(return_value=response)
 
-    with patch(
-        "src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT
-    ):
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
         result = await node_generate(state, _make_config(llm, db))
 
     assert result["prompt_tokens"] == 0
@@ -375,12 +361,8 @@ async def test_missing_usage_defaults_token_counts_to_zero() -> None:
 @pytest.mark.asyncio
 async def test_multiple_citations_all_valid_are_included() -> None:
     """Multiple valid citations all map correctly and are included in the result."""
-    chunk_a = _make_chunk(
-        document_id=str(uuid.uuid4()), highlight_text="Tekst A.", page_number=1
-    )
-    chunk_b = _make_chunk(
-        document_id=str(uuid.uuid4()), highlight_text="Tekst B.", page_number=3
-    )
+    chunk_a = _make_chunk(document_id=str(uuid.uuid4()), highlight_text="Tekst A.", page_number=1)
+    chunk_b = _make_chunk(document_id=str(uuid.uuid4()), highlight_text="Tekst B.", page_number=3)
     state = _make_state(graded_chunks=[chunk_a, chunk_b])
 
     llm_json = json.dumps(
@@ -394,9 +376,7 @@ async def test_multiple_citations_all_valid_are_included() -> None:
     llm = AsyncMock()
     llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
 
-    with patch(
-        "src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT
-    ):
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
         result = await node_generate(state, _make_config(llm, db))
 
     assert len(result["citations"]) == 2
@@ -415,9 +395,7 @@ async def test_no_chunks_and_no_citations_returns_empty_citations() -> None:
     llm = AsyncMock()
     llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
 
-    with patch(
-        "src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT
-    ):
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
         result = await node_generate(state, _make_config(llm, db))
 
     assert result["answer"] == "Brak kontekstu."
@@ -448,9 +426,7 @@ async def test_collection_id_falls_back_to_payload_when_missing_on_chunk() -> No
     llm = AsyncMock()
     llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
 
-    with patch(
-        "src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT
-    ):
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
         result = await node_generate(state, _make_config(llm, db))
 
     assert result["citations"][0]["collection_id"] == coll_id_in_payload
@@ -468,9 +444,7 @@ async def test_llm_called_with_correct_model_and_base_url() -> None:
     llm = AsyncMock()
     llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
 
-    with patch(
-        "src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT
-    ):
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
         await node_generate(state, _make_config(llm, db))
 
     call_kwargs = llm.chat_completion.call_args.kwargs

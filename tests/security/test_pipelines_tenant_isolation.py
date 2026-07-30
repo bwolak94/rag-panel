@@ -202,9 +202,7 @@ async def test_list_pipelines_does_not_expose_other_tenant_data() -> None:
         return_value=mock_response,
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            resp = await c.get(
-                "/api/v1/pipelines/", headers={"Authorization": "Bearer fake"}
-            )
+            resp = await c.get("/api/v1/pipelines/", headers={"Authorization": "Bearer fake"})
 
     assert resp.status_code == 200
     items = resp.json()["items"]

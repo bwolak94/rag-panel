@@ -208,9 +208,7 @@ async def test_list_models_does_not_include_other_tenant_private_models() -> Non
         return_value=mock_response,
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            resp = await c.get(
-                "/api/v1/models/", headers={"Authorization": "Bearer fake"}
-            )
+            resp = await c.get("/api/v1/models/", headers={"Authorization": "Bearer fake"})
 
     assert resp.status_code == 200
     items = resp.json()["items"]

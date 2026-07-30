@@ -21,6 +21,4 @@ class Role(Base, TimestampMixin):
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str | None] = mapped_column(String(500))
-    is_system: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("false")
-    )
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))

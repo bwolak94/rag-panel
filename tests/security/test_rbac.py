@@ -81,13 +81,15 @@ class TestRBAC:
     @pytest.mark.asyncio
     async def test_owner_has_all_permissions(self) -> None:
         """Owner with all permissions → all permission guards pass."""
-        all_perms = frozenset({
-            "documents:upload",
-            "documents:read",
-            "documents:delete",
-            "admin:all",
-            "collections:manage",
-        })
+        all_perms = frozenset(
+            {
+                "documents:upload",
+                "documents:read",
+                "documents:delete",
+                "admin:all",
+                "collections:manage",
+            }
+        )
         ctx = make_ctx(roles=frozenset({"owner"}), permissions=all_perms)
 
         for perm in all_perms:

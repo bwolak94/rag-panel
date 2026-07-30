@@ -111,7 +111,8 @@ async def test_event_processor_max_retries_exceeded_raises() -> None:
         patch(
             "src.ingest.event_processor.IngestionJobRepository.get_active_job",
             new=AsyncMock(return_value=job),
-        ),pytest.raises(MaxRetriesExceededError) as exc_info
+        ),
+        pytest.raises(MaxRetriesExceededError) as exc_info,
     ):
         await processor.process(session, _VALID_FIELDS)
 
@@ -124,10 +125,13 @@ async def test_event_processor_document_not_found_raises() -> None:
     session = MagicMock()
     processor = EventProcessor()
 
-    with patch(
-        "src.ingest.event_processor.DocumentRepository.get_by_id",
-        new=AsyncMock(return_value=None),
-    ), pytest.raises(MaxRetriesExceededError) as exc_info:
+    with (
+        patch(
+            "src.ingest.event_processor.DocumentRepository.get_by_id",
+            new=AsyncMock(return_value=None),
+        ),
+        pytest.raises(MaxRetriesExceededError) as exc_info,
+    ):
         await processor.process(session, _VALID_FIELDS)
 
     assert "document_not_found" in str(exc_info.value)
@@ -173,7 +177,7 @@ async def test_worker_moves_event_to_dlq_on_max_retries() -> None:
 
 @pytest.mark.asyncio
 async def test_dlq_event_contains_required_fields() -> None:
-    """DLQ event must contain original_event, failure_reason, failure_count, document_id, tenant_id."""
+    """DLQ event must contain original_event, failure_reason, failure_count, document_id, tenant_id."""  # noqa: E501
     worker = IngestWorker()
 
     mock_redis = AsyncMock()

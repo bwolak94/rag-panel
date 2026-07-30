@@ -11,8 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Canonical document status values
 DocumentStatus = Literal[
-    "uploaded", "validating", "needs_review", "indexing",
-    "ready", "rejected", "failed", "deleted"
+    "uploaded", "validating", "needs_review", "indexing", "ready", "rejected", "failed", "deleted"
 ]
 
 

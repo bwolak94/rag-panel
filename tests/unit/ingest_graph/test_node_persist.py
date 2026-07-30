@@ -71,9 +71,7 @@ async def test_persist_sets_document_ready() -> None:
     session = _make_session()
     state = _make_state()
 
-    with patch(
-        "src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()
-    ):
+    with patch("src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()):
         result = await node_persist(state, _make_config(session))
 
     assert result == {"status": "ready"}
@@ -85,9 +83,7 @@ async def test_persist_inserts_chunks_registry() -> None:
     session = _make_session()
     state = _make_state()
 
-    with patch(
-        "src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()
-    ):
+    with patch("src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()):
         await node_persist(state, _make_config(session))
 
     # chunks_registry insert + document status update + job status update
@@ -100,14 +96,13 @@ async def test_persist_writes_audit_log() -> None:
     session = _make_session()
     state = _make_state()
 
-    with patch(
-        "src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()
-    ):
+    with patch("src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()):
         await node_persist(state, _make_config(session))
 
     session.add.assert_called_once()
     audit_entry = session.add.call_args[0][0]
     from src.db.models.audit_log import AuditLog
+
     assert isinstance(audit_entry, AuditLog)
     assert audit_entry.action == "document.indexed"
     assert audit_entry.tenant_id == TENANT_ID
@@ -119,9 +114,7 @@ async def test_persist_commits_session() -> None:
     session = _make_session()
     state = _make_state()
 
-    with patch(
-        "src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()
-    ):
+    with patch("src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()):
         await node_persist(state, _make_config(session))
 
     session.commit.assert_called()

@@ -57,3 +57,11 @@ class ModelListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class ModelReachableResponse(BaseModel):
+    """Response for the model reachability check endpoint."""
+
+    model_id: uuid.UUID
+    reachable: bool
+    checked_at: str  # ISO-8601 timestamp

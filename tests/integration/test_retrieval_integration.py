@@ -21,11 +21,11 @@ try:
 except ImportError:
     pytest.skip("testcontainers not installed", allow_module_level=True)
 
-from qdrant_client import AsyncQdrantClient
+from qdrant_client import AsyncQdrantClient  # noqa: E402
 
-from src.retrieval.exceptions import EmptyCollectionListError
-from src.retrieval.schemas import QdrantPoint, TenantContext
-from src.retrieval.service import RetrievalService
+from src.retrieval.exceptions import EmptyCollectionListError  # noqa: E402
+from src.retrieval.schemas import QdrantPoint, TenantContext  # noqa: E402
+from src.retrieval.service import RetrievalService  # noqa: E402
 
 VECTOR_SIZE = 3
 COLLECTION_NAME = "emb_test_model"
@@ -44,7 +44,9 @@ def make_ctx(
 ) -> TenantContext:
     return TenantContext(
         tenant_id=tenant_id,
-        allowed_collection_ids=allowed_collection_ids if allowed_collection_ids is not None else [COLLECTION_A],
+        allowed_collection_ids=(
+            allowed_collection_ids if allowed_collection_ids is not None else [COLLECTION_A]
+        ),
     )
 
 
@@ -105,7 +107,9 @@ async def test_upsert_then_search_returns_correct_results(
 
     await service.upsert_batch(ctx, COLLECTION_NAME, [point])
 
-    results = await service.search(ctx, COLLECTION_NAME, target_vector, top_k=5, score_threshold=0.0)
+    results = await service.search(
+        ctx, COLLECTION_NAME, target_vector, top_k=5, score_threshold=0.0
+    )
 
     assert len(results) >= 1
     found_ids = [r.point_id for r in results]

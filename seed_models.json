@@ -1,0 +1,23 @@
+[
+  {
+    "name": "bge-m3",
+    "type": "embedding",
+    "provider": "ollama",
+    "endpoint_url": "${EMBEDDING_BASE_URL}",
+    "model_id": "BAAI/bge-m3",
+    "params": {"vector_size": 1024, "max_tokens": 8192, "model_name": "BAAI/bge-m3"}
+  },
+  {
+    "name": "bielik-11b",
+    "type": "llm",
+    "provider": "ollama",
+    "endpoint_url": "${LLM_BASE_URL}",
+    "model_id": "bielik-11b-v2.3-instruct",
+    "params": {
+      "model_name": "bielik-11b-v2.3-instruct",
+      "context_window": 8192,
+      "max_tokens": 2048,
+      "temperature": 0.1
+    }
+  }
+]

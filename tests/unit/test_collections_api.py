@@ -33,7 +33,9 @@ COLLECTION_ID = uuid.uuid4()
 MODEL_ID = uuid.uuid4()
 
 
-def _make_user_context(permissions: frozenset[str], allowed_ids: frozenset[uuid.UUID] | None = None) -> UserContext:
+def _make_user_context(
+    permissions: frozenset[str], allowed_ids: frozenset[uuid.UUID] | None = None
+) -> UserContext:
     return UserContext(
         user_id=USER_ID,
         keycloak_sub="kc-user",
@@ -42,8 +44,12 @@ def _make_user_context(permissions: frozenset[str], allowed_ids: frozenset[uuid.
         tenant_id=TENANT_ID,
         roles=frozenset({"admin"} if "admin:collections" in permissions else {"viewer"}),
         permissions=permissions,
-        allowed_collection_ids=allowed_ids if allowed_ids is not None else frozenset({COLLECTION_ID}),
-        writable_collection_ids=frozenset({COLLECTION_ID}) if "admin:collections" in permissions else frozenset(),
+        allowed_collection_ids=(
+            allowed_ids if allowed_ids is not None else frozenset({COLLECTION_ID})
+        ),
+        writable_collection_ids=(
+            frozenset({COLLECTION_ID}) if "admin:collections" in permissions else frozenset()
+        ),
     )
 
 
@@ -84,12 +90,12 @@ def _make_collection_response(**overrides: Any) -> CollectionResponse:
     return CollectionResponse(**defaults)
 
 
-def _make_app(ctx: UserContext):
+def _make_app(ctx: UserContext) -> Any:
     from src.main import create_app
 
     app = create_app()
 
-    async def _fake_session():
+    async def _fake_session() -> Any:
         yield MagicMock(spec=AsyncSession)
 
     app.dependency_overrides[get_current_ctx] = lambda: ctx

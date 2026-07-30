@@ -7,7 +7,9 @@ enforcement is done here — never in the repository layer.
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.schemas.model import ModelCreate, ModelListResponse, ModelResponse, ModelUpdate
@@ -17,6 +19,11 @@ from src.db.repositories.model_repository import ModelRepository
 from src.db.repositories.pipeline_repository import PipelineRepository
 from src.domain.audit_service import AuditService
 from src.domain.auth import UserContext
+
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI
+
+logger = structlog.get_logger(__name__)
 
 
 class ModelService:
@@ -185,9 +192,7 @@ class ModelService:
 
         return ModelResponse.model_validate(model)
 
-    async def deactivate_model(
-        self, model_id: uuid.UUID, ctx: UserContext, ip: str | None
-    ) -> None:
+    async def deactivate_model(self, model_id: uuid.UUID, ctx: UserContext, ip: str | None) -> None:
         """Soft-delete a model by setting is_active=False.
 
         Cannot deactivate system-wide models or models from other tenants.
@@ -225,3 +230,96 @@ class ModelService:
             details={},
             ip=ip,
         )
+
+    # ------------------------------------------------------------------
+    # Client-builder methods
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_openai_client(record: ModelsRegistry) -> AsyncOpenAI:
+        """Instantiate an OpenAI-compatible async client from a registry record.
+
+        Args:
+            record: The ModelsRegistry ORM instance.
+
+        Returns:
+            A configured AsyncOpenAI client pointing at record.endpoint_url.
+        """
+        from openai import AsyncOpenAI
+
+        return AsyncOpenAI(
+            base_url=record.endpoint_url,
+            api_key=record.params.get("api_key", "ollama"),
+            timeout=30.0,
+        )
+
+    async def get_llm_client(self, model_id: uuid.UUID, ctx: UserContext) -> AsyncOpenAI:
+        """Return an OpenAI-compatible async client for an LLM model.
+
+        Args:
+            model_id: The model UUID.
+            ctx: Authenticated user context from JWT.
+
+        Returns:
+            A configured AsyncOpenAI client.
+
+        Raises:
+            NotFoundError: If the model does not exist or is inactive.
+            PermissionDeniedError: If the model type is not 'llm'.
+        """
+        record = await self._repo.get_visible_by_id(model_id, ctx.tenant_id)
+        if record is None or not record.is_active:
+            raise NotFoundError("Model not found")
+        if record.type != "llm":
+            raise PermissionDeniedError("Model is not of type 'llm'")
+        return self._build_openai_client(record)
+
+    async def get_embedding_client(self, model_id: uuid.UUID, ctx: UserContext) -> AsyncOpenAI:
+        """Return an OpenAI-compatible async client for an embedding model.
+
+        Args:
+            model_id: The model UUID.
+            ctx: Authenticated user context from JWT.
+
+        Returns:
+            A configured AsyncOpenAI client.
+
+        Raises:
+            NotFoundError: If the model does not exist or is inactive.
+            PermissionDeniedError: If the model type is not 'embedding'.
+        """
+        record = await self._repo.get_visible_by_id(model_id, ctx.tenant_id)
+        if record is None or not record.is_active:
+            raise NotFoundError("Model not found")
+        if record.type != "embedding":
+            raise PermissionDeniedError("Model is not of type 'embedding'")
+        return self._build_openai_client(record)
+
+    async def validate_model_reachable(self, model_id: uuid.UUID, ctx: UserContext) -> bool:
+        """Check if the model endpoint responds to GET /models.
+
+        Performs an HTTP GET to {endpoint_url}/models with a 5-second timeout.
+        Returns False on any error (timeout, connection refused, non-2xx response).
+        Never raises.
+
+        Args:
+            model_id: The model UUID.
+            ctx: Authenticated user context from JWT.
+
+        Returns:
+            True if the endpoint returned a 2xx response, False otherwise.
+        """
+        import httpx
+
+        record = await self._repo.get_visible_by_id(model_id, ctx.tenant_id)
+        if record is None or not record.is_active:
+            raise NotFoundError("Model not found")
+
+        base_url = record.endpoint_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+                resp = await client.get(f"{base_url}/models")
+                return resp.is_success
+        except Exception:
+            logger.warning("model.validate_unreachable", model_id=str(model_id))
+            return False

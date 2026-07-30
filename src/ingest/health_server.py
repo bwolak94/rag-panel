@@ -14,8 +14,6 @@ async def health() -> dict[str, str]:
 
 
 async def run_health_server() -> None:
-    config = uvicorn.Config(
-        health_app, host="0.0.0.0", port=9090, log_level="warning"
-    )
+    config = uvicorn.Config(health_app, host="0.0.0.0", port=9090, log_level="warning")
     server = uvicorn.Server(config)
     await server.serve()

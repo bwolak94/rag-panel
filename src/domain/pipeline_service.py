@@ -113,9 +113,7 @@ class PipelineService:
 
         return PipelineResponse.model_validate(pipeline)
 
-    async def get_pipeline(
-        self, pipeline_id: uuid.UUID, ctx: UserContext
-    ) -> PipelineResponse:
+    async def get_pipeline(self, pipeline_id: uuid.UUID, ctx: UserContext) -> PipelineResponse:
         """Fetch a single pipeline scoped to the requesting tenant.
 
         Args:
@@ -241,9 +239,7 @@ class PipelineService:
                     "One or more collection IDs are not accessible for this tenant"
                 )
 
-    async def _validate_llm_model(
-        self, model_id: uuid.UUID, ctx: UserContext
-    ) -> None:
+    async def _validate_llm_model(self, model_id: uuid.UUID, ctx: UserContext) -> None:
         """Validate that the model is a visible, active LLM.
 
         Args:
@@ -256,14 +252,8 @@ class PipelineService:
         """
         model = await self._model_repo.get_visible_by_id(model_id, ctx.tenant_id)
         if model is None:
-            raise DomainValidationError(
-                "The referenced LLM model is not available for this tenant"
-            )
+            raise DomainValidationError("The referenced LLM model is not available for this tenant")
         if model.type != "llm":
-            raise DomainValidationError(
-                "The referenced LLM model is not available for this tenant"
-            )
+            raise DomainValidationError("The referenced LLM model is not available for this tenant")
         if not model.is_active:
-            raise DomainValidationError(
-                "The referenced LLM model is not available for this tenant"
-            )
+            raise DomainValidationError("The referenced LLM model is not available for this tenant")

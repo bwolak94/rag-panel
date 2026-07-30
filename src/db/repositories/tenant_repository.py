@@ -100,9 +100,7 @@ class TenantRepository:
         )
         await self._session.flush()
 
-    async def assign_role(
-        self, tenant_id: uuid.UUID, user_id: uuid.UUID, role_name: str
-    ) -> None:
+    async def assign_role(self, tenant_id: uuid.UUID, user_id: uuid.UUID, role_name: str) -> None:
         """Replace the user's current role in this tenant with the given role name."""
         role_q = select(Role).where(
             Role.tenant_id == tenant_id,
@@ -156,9 +154,7 @@ class TenantRepository:
             .limit(limit)
         )
         count_q = (
-            select(func.count())
-            .select_from(UserTenant)
-            .where(UserTenant.tenant_id == tenant_id)
+            select(func.count()).select_from(UserTenant).where(UserTenant.tenant_id == tenant_id)
         )
 
         rows = list((await self._session.execute(q)).mappings().all())

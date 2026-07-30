@@ -125,9 +125,7 @@ def _extract_tenant_id_from_jwt(request: Request) -> uuid.UUID | None:
         payload_b64 = parts[1]
         # JWT uses base64url without padding — re-add required padding
         payload_b64 += "=" * (4 - len(payload_b64) % 4)
-        payload = json.loads(
-            b64decode(payload_b64.replace("-", "+").replace("_", "/"))
-        )
+        payload = json.loads(b64decode(payload_b64.replace("-", "+").replace("_", "/")))
         raw = payload.get("tenant_id")
         if raw is None:
             return None

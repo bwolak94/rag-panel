@@ -106,4 +106,3 @@ class ModelRepository:
         self._session.add(model)
         await self._session.flush()
         return model
-

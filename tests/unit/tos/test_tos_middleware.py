@@ -170,12 +170,10 @@ async def test_cache_miss_queries_db_and_blocks_when_not_accepted() -> None:
 
     jwt = _make_jwt(TENANT_ID)
 
-    with patch(
-        "src.api.middleware.tos_check.TosRepository"
-    ) as MockRepo:
+    with patch("src.api.middleware.tos_check.TosRepository") as mock_repo:
         mock_repo_instance = MagicMock()
         mock_repo_instance.has_accepted_current_tos = AsyncMock(return_value=False)
-        MockRepo.return_value = mock_repo_instance
+        mock_repo.return_value = mock_repo_instance
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get(
@@ -186,9 +184,7 @@ async def test_cache_miss_queries_db_and_blocks_when_not_accepted() -> None:
     assert resp.status_code == 403
     assert resp.json()["tos_required"] is True
     # Cache should be populated with "0"
-    redis.set.assert_called_once_with(
-        f"tos:tenant:{TENANT_ID}:accepted", "0", ex=60
-    )
+    redis.set.assert_called_once_with(f"tos:tenant:{TENANT_ID}:accepted", "0", ex=60)
 
 
 @pytest.mark.asyncio
@@ -199,12 +195,10 @@ async def test_cache_miss_queries_db_and_allows_when_accepted() -> None:
 
     jwt = _make_jwt(TENANT_ID)
 
-    with patch(
-        "src.api.middleware.tos_check.TosRepository"
-    ) as MockRepo:
+    with patch("src.api.middleware.tos_check.TosRepository") as mock_repo:
         mock_repo_instance = MagicMock()
         mock_repo_instance.has_accepted_current_tos = AsyncMock(return_value=True)
-        MockRepo.return_value = mock_repo_instance
+        mock_repo.return_value = mock_repo_instance
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get(
@@ -213,9 +207,7 @@ async def test_cache_miss_queries_db_and_allows_when_accepted() -> None:
             )
 
     assert resp.status_code == 200
-    redis.set.assert_called_once_with(
-        f"tos:tenant:{TENANT_ID}:accepted", "1", ex=60
-    )
+    redis.set.assert_called_once_with(f"tos:tenant:{TENANT_ID}:accepted", "1", ex=60)
 
 
 @pytest.mark.asyncio

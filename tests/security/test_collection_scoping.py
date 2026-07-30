@@ -69,8 +69,6 @@ class TestTenantIsolation:
         execute_result.scalar_one_or_none.return_value = None  # Tenant filter excludes it
         session.execute = AsyncMock(return_value=execute_result)
 
-        ctx_a = _make_ctx(TENANT_A, ADMIN_PERMS, frozenset({COL_B}))
-
         # Tenant A queries for COL_B using their own tenant_id — result is None
         result = await repo.get_by_id(COL_B, TENANT_A)
         assert result is None
@@ -150,8 +148,19 @@ class TestTenantIsolation:
         collection.name = "Medical Records"
         collection.description = None
         collection.embedding_model_id = MODEL_ID
-        collection.chunk_config = {"strategy": "recursive", "chunk_size": 512, "overlap": 64, "min_chunk_size": 64, "separators": ["\n\n", "\n", " "], "document_type_overrides": {}}
-        collection.validation_config = {"confidence_threshold": 0.7, "require_review": False, "pii_action": "flag"}
+        collection.chunk_config = {
+            "strategy": "recursive",
+            "chunk_size": 512,
+            "overlap": 64,
+            "min_chunk_size": 64,
+            "separators": ["\n\n", "\n", " "],
+            "document_type_overrides": {},
+        }
+        collection.validation_config = {
+            "confidence_threshold": 0.7,
+            "require_review": False,
+            "pii_action": "flag",
+        }
         collection.is_active = True
         collection.created_at = now
         collection.updated_at = now
@@ -207,7 +216,6 @@ class TestTenantIsolation:
         execute_result.scalar_one.return_value = 1
         session.execute = AsyncMock(return_value=execute_result)
 
-        ctx_b = _make_ctx(TENANT_B, VIEWER_PERMS, frozenset({COL_B}))
         items, total = await repo.list_by_tenant(
             tenant_id=TENANT_B,
             allowed_ids=frozenset({COL_B}),

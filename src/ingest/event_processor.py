@@ -64,14 +64,10 @@ class EventProcessor:
         try:
             event = IngestEvent(**{k: v for k, v in fields.items()})
         except Exception as exc:
-            raise MaxRetriesExceededError(
-                f"event_parse_error: {exc}", failure_count=1
-            ) from exc
+            raise MaxRetriesExceededError(f"event_parse_error: {exc}", failure_count=1) from exc
 
         # 3. Idempotency check: is this document already fully processed?
-        doc = await DocumentRepository(session).get_by_id(
-            event.document_id, event.tenant_id
-        )
+        doc = await DocumentRepository(session).get_by_id(event.document_id, event.tenant_id)
         if doc is None:
             logger.error(
                 "document_not_found_in_event",

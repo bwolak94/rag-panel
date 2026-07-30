@@ -35,9 +35,7 @@ class UserContext:
     def __post_init__(self) -> None:
         # Structural invariant: write access implies read access
         if not self.writable_collection_ids <= self.allowed_collection_ids:
-            raise ValueError(
-                "writable_collection_ids must be a subset of allowed_collection_ids"
-            )
+            raise ValueError("writable_collection_ids must be a subset of allowed_collection_ids")
 
     def __repr__(self) -> str:
         # email and keycloak_sub intentionally excluded — GDPR log hygiene

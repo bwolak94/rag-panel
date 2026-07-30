@@ -38,9 +38,7 @@ class TosVersion(Base, TimestampMixin):
     version: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(20), nullable=False, server_default=text("'draft'")
-    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'draft'"))
     effective_date: Mapped[datetime] = mapped_column(nullable=False)
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
 

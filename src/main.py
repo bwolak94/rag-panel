@@ -40,10 +40,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     initialize_langfuse()
 
     # Warm up Postgres connection pool
-    from src.core.database import engine
+    from src.core.database import AsyncSessionLocal, engine
 
     async with engine.begin() as conn:
         await conn.run_sync(lambda _: None)
+
+    # Seed default model registry entries
+    from src.db.seed import seed_default_models
+
+    async with AsyncSessionLocal() as seed_session:
+        await seed_default_models(seed_session)
 
     # Initialize Qdrant client
     app.state.qdrant_client = AsyncQdrantClient(
@@ -91,7 +97,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)  # /v1/models, /v1/chat/completions
     app.include_router(conversations.router, prefix="/api/v1")  # /api/v1/conversations
     app.include_router(messages.router, prefix="/api/v1")  # /api/v1/messages/{id}/feedback
-    app.include_router(models.router, prefix="/api/v1")   # /api/v1/models
+    app.include_router(models.router, prefix="/api/v1")  # /api/v1/models
     app.include_router(pipelines.router, prefix="/api/v1")  # /api/v1/pipelines
     app.include_router(webhook_router)  # /internal/minio-webhook
     app.include_router(tos.router, prefix="/api/v1")  # /api/v1/terms, /api/v1/tenants/.../terms/*

@@ -159,7 +159,9 @@ async def test_upload_duplicate_sha256_returns_409() -> None:
 
     with patch(
         "src.domain.document_service.DocumentService.initiate_upload",
-        new=AsyncMock(side_effect=ConflictError(f"Duplicate document. existing_document_id={DOCUMENT_ID}")),
+        new=AsyncMock(
+            side_effect=ConflictError(f"Duplicate document. existing_document_id={DOCUMENT_ID}")
+        ),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.post("/api/v1/documents", json=_VALID_UPLOAD_BODY)

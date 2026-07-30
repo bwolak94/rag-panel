@@ -31,9 +31,7 @@ class IngestionJobRepository:
         )
         return (await self._session.execute(q)).scalar_one_or_none()
 
-    async def create(
-        self, tenant_id: uuid.UUID, document_id: uuid.UUID
-    ) -> IngestionJob:
+    async def create(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> IngestionJob:
         job = IngestionJob(
             tenant_id=tenant_id,
             document_id=document_id,
@@ -44,9 +42,7 @@ class IngestionJobRepository:
         await self._session.flush()
         return job
 
-    async def mark_processing(
-        self, job_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> None:
+    async def mark_processing(self, job_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
         await self._session.execute(
             update(IngestionJob)
             .where(IngestionJob.id == job_id, IngestionJob.tenant_id == tenant_id)
@@ -54,9 +50,7 @@ class IngestionJobRepository:
         )
         await self._session.commit()
 
-    async def mark_completed(
-        self, job_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> None:
+    async def mark_completed(self, job_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
         await self._session.execute(
             update(IngestionJob)
             .where(IngestionJob.id == job_id, IngestionJob.tenant_id == tenant_id)
@@ -64,9 +58,7 @@ class IngestionJobRepository:
         )
         await self._session.commit()
 
-    async def mark_failed(
-        self, job_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> None:
+    async def mark_failed(self, job_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
         await self._session.execute(
             update(IngestionJob)
             .where(IngestionJob.id == job_id, IngestionJob.tenant_id == tenant_id)

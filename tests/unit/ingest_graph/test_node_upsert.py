@@ -78,9 +78,7 @@ async def test_upsert_calls_retrieval_service() -> None:
     retrieval.upsert_batch = AsyncMock()
     state = _make_state(chunks=chunks, embeddings=embeddings)
 
-    with patch(
-        "src.graphs.ingest_graph.nodes.node_upsert.update_step", new=AsyncMock()
-    ):
+    with patch("src.graphs.ingest_graph.nodes.node_upsert.update_step", new=AsyncMock()):
         result = await node_upsert(state, _make_config(session, retrieval))
 
     retrieval.upsert_batch.assert_called_once()
@@ -111,9 +109,7 @@ async def test_upsert_payload_contains_tenant_id() -> None:
     retrieval.upsert_batch = capture_upsert
     state = _make_state(chunks=chunks, embeddings=embeddings)
 
-    with patch(
-        "src.graphs.ingest_graph.nodes.node_upsert.update_step", new=AsyncMock()
-    ):
+    with patch("src.graphs.ingest_graph.nodes.node_upsert.update_step", new=AsyncMock()):
         await node_upsert(state, _make_config(session, retrieval))
 
     assert len(captured_points) == 2
@@ -132,6 +128,7 @@ async def test_upsert_no_direct_qdrant_import() -> None:
 
     # Check source lines for direct import statement (not just docstring mentions)
     import inspect
+
     import_lines = [
         line.strip()
         for line in inspect.getsource(mod).splitlines()
@@ -153,9 +150,7 @@ async def test_upsert_chunk_embedding_mismatch_raises() -> None:
     state = _make_state(chunks=chunks, embeddings=embeddings)
 
     with (
-        patch(
-            "src.graphs.ingest_graph.nodes.node_upsert.update_step", new=AsyncMock()
-        ),
+        patch("src.graphs.ingest_graph.nodes.node_upsert.update_step", new=AsyncMock()),
         pytest.raises(IngestNodeError, match="mismatch"),
     ):
         await node_upsert(state, _make_config(session, retrieval))
