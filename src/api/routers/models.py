@@ -16,7 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies.auth import get_current_ctx, require_permission
 from src.api.dependencies.pagination import PaginationParams, get_pagination
-from src.api.schemas.model import ModelCreate, ModelListResponse, ModelResponse, ModelUpdate
+from src.api.schemas.model import (
+    ModelCreate,
+    ModelListResponse,
+    ModelReachableResponse,
+    ModelResponse,
+    ModelUpdate,
+)
 from src.core.database import get_db_session
 from src.domain.auth import UserContext
 from src.domain.model_service import ModelService
@@ -144,3 +150,29 @@ async def deactivate_model(
     ip = request.client.host if request.client else None
     await _get_service(session).deactivate_model(model_id, ctx, ip)
     await session.commit()
+
+
+@router.post(
+    "/{model_id}/check",
+    response_model=ModelReachableResponse,
+    summary="Check if model endpoint is reachable (Admin only)",
+)
+async def check_model_reachable(
+    model_id: UUID,
+    ctx: Annotated[UserContext, Depends(get_current_ctx)],
+    _: Annotated[None, Depends(_require_admin)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ModelReachableResponse:
+    """Probe the model's endpoint URL to verify it is reachable.
+
+    Sends a GET request to {endpoint_url}/models with a 5-second timeout.
+    Returns reachable=False on timeout, connection error, or non-2xx response.
+    """
+    from datetime import UTC, datetime
+
+    reachable = await _get_service(session).validate_model_reachable(model_id, ctx)
+    return ModelReachableResponse(
+        model_id=model_id,
+        reachable=reachable,
+        checked_at=datetime.now(UTC).isoformat(),
+    )
