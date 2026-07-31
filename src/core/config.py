@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     RETRIEVAL_TOP_K: int = 8
     RETRIEVAL_RELEVANCE_THRESHOLD: float = 0.5
     NOT_FOUND_MESSAGE: str = "I could not find an answer in the available documents."
+    DEFAULT_CONTEXT_TOKEN_BUDGET: int = 6000
 
     # Langfuse (optional — disabled when keys are absent)
     LANGFUSE_PUBLIC_KEY: str | None = None

@@ -56,6 +56,18 @@ class LLMUnavailableError(ServiceUnavailableError):
     """LLM unreachable after retries. Maps to HTTP 503 with Retry-After: 60."""
 
 
+class InvalidDocumentStateError(RAGPlatformError):
+    """Document is not in the expected state for this operation.
+
+    e.g. approve/reject on a document that is not in needs_review status.
+    Maps to HTTP 409.
+    """
+
+    def __init__(self, message: str, current_status: str | None = None) -> None:
+        super().__init__(message)
+        self.current_status = current_status
+
+
 class IngestNodeError(RAGPlatformError):
     """Raised by ingest graph nodes on recoverable or unrecoverable pipeline errors.
 

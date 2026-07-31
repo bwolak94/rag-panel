@@ -13,10 +13,12 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+from langfuse import observe
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.exceptions import IngestNodeError
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.db.models.collection import Collection
 from src.db.models.models_registry import ModelsRegistry
 from src.graphs.ingest_graph.helpers import update_step, utcnow
@@ -27,6 +29,7 @@ from src.retrieval.service import RetrievalService
 logger = structlog.get_logger(__name__)
 
 
+@observe(name="node_upsert", capture_input=False, capture_output=False)
 async def node_upsert(state: IngestState, config: dict[str, Any]) -> dict[str, Any]:
     """Upsert chunk embeddings into Qdrant via RetrievalService.
 
@@ -101,6 +104,7 @@ async def node_upsert(state: IngestState, config: dict[str, Any]) -> dict[str, A
         await retrieval.upsert_batch(ctx, qdrant_collection, points)
 
         point_ids: list[UUID] = [p.id for p in points]
+        elapsed = _elapsed_ms(step_start)
         await update_step(
             session,
             state.job_id,
@@ -109,8 +113,18 @@ async def node_upsert(state: IngestState, config: dict[str, Any]) -> dict[str, A
             started_at=step_start,
             meta={
                 "points_upserted": len(points),
-                "latency_ms": _elapsed_ms(step_start),
+                "latency_ms": elapsed,
             },
+        )
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "collection_id": str(state.collection_id),
+                "qdrant_collection": qdrant_collection,
+                "points_upserted": len(points),
+                "latency_ms": elapsed,
+            }
         )
         logger.info(
             "node_upsert_completed",
@@ -120,6 +134,14 @@ async def node_upsert(state: IngestState, config: dict[str, Any]) -> dict[str, A
         return {"point_ids": point_ids}
 
     except IngestNodeError as exc:
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "error": True,
+                "error_type": type(exc).__name__,
+            }
+        )
         await update_step(
             session,
             state.job_id,
@@ -131,6 +153,14 @@ async def node_upsert(state: IngestState, config: dict[str, Any]) -> dict[str, A
         raise
     except Exception as exc:
         error_msg = f"upsert_error: {type(exc).__name__}"
+        _lf_update_span(
+            metadata={
+                "document_id": str(state.document_id),
+                "tenant_id": str(state.tenant_id),
+                "error": True,
+                "error_type": type(exc).__name__,
+            }
+        )
         await update_step(
             session,
             state.job_id,

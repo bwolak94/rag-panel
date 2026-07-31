@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -106,3 +107,42 @@ class ModelRepository:
         self._session.add(model)
         await self._session.flush()
         return model
+
+    async def update_calibration(
+        self,
+        model_id: uuid.UUID,
+        threshold: float,
+        sample_count: int,
+    ) -> ModelsRegistry | None:
+        """Write calibration fields to a model record and flush.
+
+        Callers must NOT call session.commit() — that is the router's responsibility.
+
+        Args:
+            model_id: Primary key of the ModelsRegistry row to update.
+            threshold: Calibrated score threshold (0.0–1.0).
+            sample_count: Number of eval samples that produced this threshold.
+
+        Returns:
+            The updated ModelsRegistry instance, or None if not found.
+        """
+        model = await self._session.get(ModelsRegistry, model_id)
+        if model is None:
+            return None
+        model.score_threshold_calibrated = threshold
+        model.threshold_calibrated_at = datetime.now(tz=UTC)
+        model.threshold_calibration_samples = sample_count
+        await self._session.flush()
+        return model
+
+    async def get_calibrated_threshold(self, model_id: uuid.UUID) -> float | None:
+        """Return score_threshold_calibrated for a model, or None if not calibrated.
+
+        Args:
+            model_id: Primary key of the ModelsRegistry row.
+
+        Returns:
+            The calibrated threshold float, or None.
+        """
+        q = select(ModelsRegistry.score_threshold_calibrated).where(ModelsRegistry.id == model_id)
+        return (await self._session.execute(q)).scalar_one_or_none()

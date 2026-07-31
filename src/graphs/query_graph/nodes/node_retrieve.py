@@ -21,7 +21,7 @@ from src.core.exceptions import QueryNodeError
 from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.graphs.query_graph.state import QueryState
 from src.retrieval.exceptions import EmptyCollectionListError
-from src.retrieval.schemas import TenantContext
+from src.retrieval.schemas import SearchMode, TenantContext
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +40,21 @@ def _make_qdrant_collection_name(model_record: Any) -> str:
         return f"emb_{slug}"
     derived = model_record.model_id.replace("/", "_").replace("-", "_").lower()
     return f"emb_{derived}"
+
+
+def _resolve_search_mode(search_config: dict[str, Any] | None) -> SearchMode:
+    """Extract SearchMode from a collection's search_config JSON field.
+
+    Returns SearchMode.DENSE if the field is absent or contains an unknown value.
+    """
+    if not search_config:
+        return SearchMode.DENSE
+    raw = search_config.get("search_mode", "dense")
+    try:
+        return SearchMode(raw)
+    except ValueError:
+        logger.warning("node_retrieve.unknown_search_mode", raw_value=raw)
+        return SearchMode.DENSE
 
 
 @observe(capture_input=False, capture_output=False)
@@ -102,20 +117,30 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
     except Exception as exc:
         raise QueryNodeError(f"embedding_error: {type(exc).__name__}") from exc
 
+    # Resolve search configuration from the collection's search_config JSON column.
+    search_config: dict[str, Any] | None = getattr(collection, "search_config", None)
+    search_mode = _resolve_search_mode(search_config)
+    top_k: int = int((search_config or {}).get("top_k", _DEFAULT_TOP_K))
+    score_threshold: float = float(
+        (search_config or {}).get("score_threshold", _DEFAULT_SCORE_THRESHOLD)
+    )
+
     # Build tenant context
     tenant_ctx = TenantContext(
         tenant_id=state.tenant_id,
         allowed_collection_ids=list(state.allowed_collection_ids),
     )
 
-    # Search Qdrant
+    # Search Qdrant — dispatch to hybrid or dense based on collection config.
     try:
         results = await retrieval.search(
             ctx=tenant_ctx,
             qdrant_collection=qdrant_collection,
             query_vector=query_vector,
-            top_k=_DEFAULT_TOP_K,
-            score_threshold=_DEFAULT_SCORE_THRESHOLD,
+            top_k=top_k,
+            score_threshold=score_threshold,
+            search_mode=search_mode,
+            query_text=query_text,
         )
     except EmptyCollectionListError:
         raise
@@ -140,8 +165,13 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
     _lf_update_span(
         metadata={
             "tenant_id": str(state.tenant_id),
-            "chunk_count": len(retrieved_chunks),
+            "embedding_model_id": str(model_record.id),
             "qdrant_collection": qdrant_collection,
+            "search_mode": search_mode.value,
+            "top_k": top_k,
+            "score_threshold": score_threshold,
+            "chunk_count": len(retrieved_chunks),
+            "latency_ms": elapsed_ms,
         }
     )
     logger.info(
@@ -149,6 +179,7 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
         tenant_id=str(state.tenant_id),
         qdrant_collection=qdrant_collection,
         chunk_count=len(retrieved_chunks),
+        search_mode=search_mode.value,
         latency_ms=elapsed_ms,
     )
 

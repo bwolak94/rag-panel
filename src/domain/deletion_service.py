@@ -6,7 +6,7 @@ import asyncio
 import uuid
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.clients.minio_client import get_minio_client
@@ -14,6 +14,7 @@ from src.core.exceptions import NotFoundError
 from src.db.models.collection import Collection
 from src.db.models.conversation import Conversation
 from src.db.models.document import Document
+from src.db.models.knowledge_graph import MedicalEntity
 from src.db.models.models_registry import ModelsRegistry
 from src.db.repositories.tenant_repository import TenantRepository
 from src.domain.audit_service import AuditService
@@ -139,7 +140,19 @@ class DeletionService:
                 error=str(exc),
             )
 
-        # 3. Hard-delete from Postgres first (chunks_registry cascades via FK)
+        # 3a. Count dependent knowledge-graph rows for the audit trail.
+        #     The rows are removed by Postgres CASCADE when the document row is
+        #     deleted (step 3b), so we must read the counts BEFORE the delete.
+        entity_count_result = await self._session.execute(
+            select(func.count(MedicalEntity.id)).where(
+                MedicalEntity.document_id == document_id,
+                MedicalEntity.tenant_id == ctx.tenant_id,
+            )
+        )
+        entity_count: int = entity_count_result.scalar_one()
+
+        # 3b. Hard-delete from Postgres (cascades to chunks_registry,
+        #     medical_entities, and entity_relations via FKs).
         await self._session.delete(doc)
         await self._session.flush()
 
@@ -147,6 +160,16 @@ class DeletionService:
             "deletion_service.document_hard_deleted",
             document_id=str(document_id),
             tenant_id=str(ctx.tenant_id),
+        )
+
+        # Explicit audit log for cascade-deleted knowledge-graph rows.
+        # Postgres CASCADE handles the actual deletion; we log the count so
+        # operators have a full audit trail without relying on DB-level triggers.
+        logger.info(
+            "deletion_service.document.entities_cascade_deleted",
+            document_id=str(document_id),
+            tenant_id=str(ctx.tenant_id),
+            entity_count=entity_count,
         )
 
         # 4. Delete Qdrant vectors (best-effort — swallow all errors)
@@ -197,7 +220,10 @@ class DeletionService:
             action="document.hard_deleted",
             resource_type="document",
             resource_id=document_id,
-            details={"collection_id": str(collection_id)},
+            details={
+                "collection_id": str(collection_id),
+                "cascade_deleted_entity_count": entity_count,
+            },
         )
 
     async def delete_conversation(

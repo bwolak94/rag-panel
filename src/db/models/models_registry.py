@@ -5,9 +5,10 @@ Non-NULL tenant_id means the model is private to that tenant.
 """
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ARRAY, Boolean, CheckConstraint, ForeignKey, String, text
+from sqlalchemy import ARRAY, Boolean, CheckConstraint, Float, ForeignKey, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -42,3 +43,17 @@ class ModelsRegistry(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true"), index=True
     )
+
+    # ------------------------------------------------------------------
+    # Score-threshold calibration fields (populated by ThresholdCalibrationService)
+    # ------------------------------------------------------------------
+
+    score_threshold_calibrated: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )  # Optimal threshold determined by F1 sweep on eval set; None = use app default
+    threshold_calibrated_at: Mapped[datetime | None] = mapped_column(
+        nullable=True
+    )  # UTC timestamp of the last calibration run
+    threshold_calibration_samples: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )  # Number of EvalResult samples used in the last calibration run

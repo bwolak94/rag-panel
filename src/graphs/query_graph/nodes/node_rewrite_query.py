@@ -109,6 +109,11 @@ async def node_rewrite_query(state: QueryState, config: dict[str, Any]) -> dict[
     _lf_update_span(
         metadata={
             "tenant_id": str(state.tenant_id),
+            "model_id": str(model_record.id),
+            # lengths are safe metrics: they reveal nothing about content
+            "question_length": len(state.question),
+            "rewritten_query_length": len(rewritten_query),
+            "history_turns": len(state.conversation_history),
         }
     )
     logger.info(

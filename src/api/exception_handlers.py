@@ -16,6 +16,7 @@ from src.core.exceptions import (
     ConflictError,
     ConversationNotFoundError,
     DomainValidationError,
+    InvalidDocumentStateError,
     NotFoundError,
     PermissionDeniedError,
     ServiceUnavailableError,
@@ -64,6 +65,15 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def tenant_isolation_handler(req: Request, exc: TenantIsolationError) -> JSONResponse:
         # Always 403, never expose cross-tenant resource existence
         return JSONResponse(status_code=403, content={"detail": "Access denied"})
+
+    @app.exception_handler(InvalidDocumentStateError)
+    async def invalid_document_state_handler(
+        req: Request, exc: InvalidDocumentStateError
+    ) -> JSONResponse:
+        detail = "Document is not in the expected state for this operation."
+        if exc.current_status:
+            detail += f" Current status: {exc.current_status}."
+        return JSONResponse(status_code=409, content={"detail": detail})
 
     @app.exception_handler(ConflictError)
     async def conflict_handler(req: Request, exc: ConflictError) -> JSONResponse:

@@ -6,6 +6,7 @@ Any import of qdrant_client outside src/retrieval/ fails CI.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from uuid import UUID
 
@@ -19,6 +20,7 @@ from qdrant_client.models import (
     PointStruct,
     VectorParams,
 )
+from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
 from tenacity import (
     retry,
     retry_if_not_exception_type,
@@ -32,13 +34,45 @@ from tenacity import (
 from src.retrieval.exceptions import EmptyCollectionListError, QdrantUnavailableError
 from src.retrieval.filters import (
     build_document_delete_filter,
-    build_mandatory_filter,
+    build_read_filter,
     build_tenant_delete_filter,
     merge_filters,
 )
-from src.retrieval.schemas import QdrantPoint, RetrievalResult, TenantContext
+from src.retrieval.reranker import reciprocal_rank_fusion
+from src.retrieval.schemas import QdrantPoint, RetrievalResult, SearchMode, TenantContext
 
 logger = structlog.get_logger(__name__)
+
+# BM25 corpus fetch multiplier — fetch this many more candidates than top_k so
+# BM25 has a meaningful corpus to rank over. Value of 5 balances recall vs. latency.
+_BM25_CORPUS_MULTIPLIER = 5
+
+
+def _resolve_threshold(
+    calibrated: float | None,
+    explicit: float | None,
+    default: float,
+) -> float:
+    """Return the effective score threshold using the precedence chain.
+
+    Priority (first non-None wins):
+      1. calibrated — from ThresholdCalibrationService persisted in DB
+      2. explicit   — caller override (e.g. from collection search_config)
+      3. default    — application-level constant
+
+    Args:
+        calibrated: Calibrated threshold from the last eval sweep, or None.
+        explicit: Caller-supplied threshold override, or None.
+        default: Application default to use as final fallback.
+
+    Returns:
+        The resolved threshold float.
+    """
+    if calibrated is not None:
+        return calibrated
+    if explicit is not None:
+        return explicit
+    return default
 
 
 def _validate_point_payload(ctx: TenantContext, point: QdrantPoint) -> None:
@@ -51,6 +85,101 @@ def _validate_point_payload(ctx: TenantContext, point: QdrantPoint) -> None:
         )
 
 
+def _assert_write_allowed_for_public(
+    ctx: TenantContext,
+    collection_id: UUID | None,
+) -> None:
+    """Raise PermissionError if ctx.tenant_id may not write to a public collection.
+
+    A collection is considered public if its ID appears in ctx.public_collection_ids.
+    Public collections may only be written by the platform-admin tenant that created
+    them (managed_by_tenant_id).  RetrievalService does NOT have DB access to look up
+    managed_by_tenant_id directly, so the contract is enforced via TenantContext:
+      - If collection_id is in public_collection_ids AND NOT in allowed_collection_ids,
+        the caller does not own this collection and must not write.
+      - If collection_id is in both lists, the caller owns the collection (they are the
+        managing tenant) and write is permitted.
+
+    Args:
+        ctx: Caller's TenantContext from verified JWT.
+        collection_id: The collection the write targets, or None (skipped).
+
+    Raises:
+        PermissionError: If the collection is public and the caller is not its owner.
+    """
+    if collection_id is None:
+        return
+    public_set = {str(c) for c in ctx.public_collection_ids}
+    allowed_set = {str(c) for c in ctx.allowed_collection_ids}
+    collection_str = str(collection_id)
+
+    if collection_str in public_set and collection_str not in allowed_set:
+        raise PermissionError(
+            f"Tenant '{ctx.tenant_id}' does not own public collection '{collection_id}' "
+            "and may not write to it. Only the managing tenant may upsert or delete "
+            "points in a public collection."
+        )
+
+
+def _scored_points_to_results(hits: list[ScoredPoint]) -> list[RetrievalResult]:
+    """Convert raw Qdrant ScoredPoint list to RetrievalResult list."""
+    results: list[RetrievalResult] = []
+    for hit in hits:
+        payload: dict[str, Any] = hit.payload or {}
+        results.append(
+            RetrievalResult(
+                point_id=UUID(str(hit.id)),
+                document_id=UUID(str(payload["document_id"])),
+                chunk_id=None,
+                score=hit.score,
+                payload=payload,
+                page_number=payload.get("page"),
+                highlight_text=payload.get("text"),
+                collection_id=UUID(str(payload["collection_id"]))
+                if payload.get("collection_id")
+                else None,
+            )
+        )
+    return results
+
+
+def _run_bm25(
+    query_text: str,
+    corpus_results: list[RetrievalResult],
+) -> list[RetrievalResult]:
+    """Run BM25Okapi over the text payloads of corpus_results and return re-ranked list.
+
+    This is intentionally synchronous — BM25 over top-k*5 documents is sub-millisecond
+    and does not warrant an executor or async wrapper.
+
+    Args:
+        query_text: Original (not rewritten) user query for tokenization.
+        corpus_results: Candidate results with text in payload["text"].
+
+    Returns:
+        RetrievalResult list re-ordered by BM25 score descending. Results without
+        a text payload are scored 0 and sorted to the bottom.
+    """
+    if not corpus_results:
+        return []
+
+    texts = [str(r.payload.get("text", "")) for r in corpus_results]
+    # Simple whitespace tokenization — adequate for BM25; language-agnostic.
+    tokenized_corpus = [t.lower().split() for t in texts]
+    tokenized_query = query_text.lower().split()
+
+    bm25 = BM25Okapi(tokenized_corpus)
+    scores: list[float] = list(bm25.get_scores(tokenized_query))
+
+    indexed = sorted(
+        zip(scores, corpus_results, strict=True),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    # Replace the dense score with the BM25 score so RRF receives the BM25 rank order.
+    return [r.model_copy(update={"score": s}) for s, r in indexed]
+
+
 class RetrievalService:
     """Single access point to Qdrant.
 
@@ -60,24 +189,46 @@ class RetrievalService:
     def __init__(self, client: AsyncQdrantClient) -> None:
         self._client = client
 
+    # Default score threshold used when neither a calibrated value nor an
+    # explicit caller value is provided.  Kept as a class constant so it can
+    # be referenced in tests and by the retrieve node without hard-coding 0.0.
+    DEFAULT_SCORE_THRESHOLD: float = 0.0
+
     async def search(
         self,
         ctx: TenantContext,
         qdrant_collection: str,
         query_vector: list[float],
         top_k: int = 8,
-        score_threshold: float = 0.0,
+        score_threshold: float | None = None,
         additional_filter: object | None = None,
+        search_mode: SearchMode = SearchMode.DENSE,
+        query_text: str | None = None,
+        calibrated_threshold: float | None = None,
     ) -> list[RetrievalResult]:
         """Search for semantically similar chunks within tenant+collections scope.
+
+        Dispatches to hybrid search when search_mode=HYBRID and query_text is provided.
+
+        Score threshold resolution order (first non-None wins):
+          1. ``calibrated_threshold`` — value from ThresholdCalibrationService stored in DB,
+             fetched by the caller (e.g. retrieve node) via ModelService.get_calibrated_threshold.
+          2. ``score_threshold`` — explicit caller override (e.g. collection search_config).
+          3. ``RetrievalService.DEFAULT_SCORE_THRESHOLD`` (0.0) — application default.
 
         Args:
             ctx: Tenant context from verified JWT. Must have at least one allowed_collection_id.
             qdrant_collection: Physical Qdrant collection name (e.g., "emb_bge_m3").
             query_vector: Embedding vector (same model used to index).
             top_k: Maximum results. Default 8.
-            score_threshold: Minimum similarity score. Default 0.0 (no cutoff).
+            score_threshold: Explicit caller override for minimum similarity score.
+                Pass None to allow calibrated_threshold or the application default to apply.
             additional_filter: Optional Qdrant Filter merged with mandatory filter.
+            search_mode: DENSE (default) or HYBRID. HYBRID requires query_text.
+            query_text: Original query text for BM25 tokenization (HYBRID only).
+            calibrated_threshold: Calibrated threshold from the last eval sweep.
+                Fetched by the caller from ModelService.get_calibrated_threshold().
+                Takes precedence over score_threshold when not None.
 
         Returns:
             List of RetrievalResult ordered by score descending.
@@ -85,15 +236,34 @@ class RetrievalService:
         Raises:
             EmptyCollectionListError: If ctx.allowed_collection_ids is empty.
             QdrantUnavailableError: If Qdrant unreachable after retries.
+            ValueError: If search_mode=HYBRID but query_text is None or empty.
         """
+        effective_threshold = _resolve_threshold(
+            calibrated_threshold, score_threshold, self.DEFAULT_SCORE_THRESHOLD
+        )
+
+        if search_mode is SearchMode.HYBRID:
+            if not query_text:
+                raise ValueError("search_mode=HYBRID requires a non-empty query_text")
+            return await self.search_hybrid(
+                ctx=ctx,
+                qdrant_collection=qdrant_collection,
+                query_vector=query_vector,
+                query_text=query_text,
+                top_k=top_k,
+                score_threshold=effective_threshold,
+                additional_filter=additional_filter,
+            )
+
         from qdrant_client.models import Filter as QdrantFilter
 
-        mandatory = build_mandatory_filter(
+        read_filter = build_read_filter(
             tenant_id=str(ctx.tenant_id),
-            collection_ids=[str(c) for c in ctx.allowed_collection_ids],
+            allowed_collection_ids=[str(c) for c in ctx.allowed_collection_ids],
+            public_collection_ids=[str(c) for c in ctx.public_collection_ids],
         )
         combined = merge_filters(
-            mandatory,
+            read_filter,
             additional_filter if isinstance(additional_filter, QdrantFilter) else None,
         )
 
@@ -101,38 +271,107 @@ class RetrievalService:
             "retrieval.search",
             tenant_id=str(ctx.tenant_id),
             collection_count=len(ctx.allowed_collection_ids),
+            public_collection_count=len(ctx.public_collection_ids),
             top_k=top_k,
-            score_threshold=score_threshold,
+            score_threshold=effective_threshold,
+            calibrated=calibrated_threshold is not None,
+            search_mode=search_mode.value,
         )
 
         hits: list[ScoredPoint]
         try:
             hits = await self._search_with_retry(
-                qdrant_collection, query_vector, combined, top_k, score_threshold
+                qdrant_collection, query_vector, combined, top_k, effective_threshold
             )
         except EmptyCollectionListError:
             raise
         except Exception as exc:
             raise QdrantUnavailableError(str(exc)) from exc
 
-        results: list[RetrievalResult] = []
-        for hit in hits:
-            payload: dict[str, Any] = hit.payload or {}
-            results.append(
-                RetrievalResult(
-                    point_id=UUID(str(hit.id)),
-                    document_id=UUID(str(payload["document_id"])),
-                    chunk_id=None,
-                    score=hit.score,
-                    payload=payload,
-                    page_number=payload.get("page"),
-                    highlight_text=payload.get("text"),
-                    collection_id=UUID(str(payload["collection_id"]))
-                    if payload.get("collection_id")
-                    else None,
-                )
+        return _scored_points_to_results(hits)
+
+    async def search_hybrid(
+        self,
+        ctx: TenantContext,
+        qdrant_collection: str,
+        query_vector: list[float],
+        query_text: str,
+        top_k: int = 8,
+        score_threshold: float = 0.0,
+        additional_filter: object | None = None,
+    ) -> list[RetrievalResult]:
+        """Hybrid BM25 + dense vector search fused with Reciprocal Rank Fusion.
+
+        Strategy:
+        1. Run dense search for top_k results (the final ranked set).
+        2. Fetch a larger candidate corpus (top_k * BM25_CORPUS_MULTIPLIER) via
+           a second dense query — this gives BM25 a corpus to rank over without
+           requiring a full collection scan.
+        3. Run BM25Okapi over the corpus texts synchronously (fast, CPU-bound).
+        4. Apply RRF to merge the two ranked lists and return top_k results.
+
+        Both Qdrant calls are issued in parallel via asyncio.gather.
+
+        Args:
+            ctx: Tenant context from verified JWT.
+            qdrant_collection: Physical Qdrant collection name.
+            query_vector: Embedding vector for the rewritten query.
+            query_text: Original user query text for BM25 tokenization.
+            top_k: Number of final results to return. Default 8.
+            score_threshold: Applied to the dense retrieval pass only.
+            additional_filter: Optional Qdrant Filter merged with mandatory filter.
+
+        Returns:
+            List of RetrievalResult ordered by RRF score descending, length <= top_k.
+
+        Raises:
+            EmptyCollectionListError: If ctx.allowed_collection_ids is empty.
+            QdrantUnavailableError: If Qdrant unreachable after retries.
+        """
+        from qdrant_client.models import Filter as QdrantFilter
+
+        read_filter = build_read_filter(
+            tenant_id=str(ctx.tenant_id),
+            allowed_collection_ids=[str(c) for c in ctx.allowed_collection_ids],
+            public_collection_ids=[str(c) for c in ctx.public_collection_ids],
+        )
+        combined = merge_filters(
+            read_filter,
+            additional_filter if isinstance(additional_filter, QdrantFilter) else None,
+        )
+
+        corpus_k = top_k * _BM25_CORPUS_MULTIPLIER
+
+        logger.debug(
+            "retrieval.search_hybrid",
+            tenant_id=str(ctx.tenant_id),
+            collection_count=len(ctx.allowed_collection_ids),
+            public_collection_count=len(ctx.public_collection_ids),
+            top_k=top_k,
+            corpus_k=corpus_k,
+            score_threshold=score_threshold,
+        )
+
+        try:
+            dense_hits, corpus_hits = await asyncio.gather(
+                self._search_with_retry(
+                    qdrant_collection, query_vector, combined, top_k, score_threshold
+                ),
+                self._search_with_retry(qdrant_collection, query_vector, combined, corpus_k, 0.0),
             )
-        return results
+        except EmptyCollectionListError:
+            raise
+        except Exception as exc:
+            raise QdrantUnavailableError(str(exc)) from exc
+
+        dense_results = _scored_points_to_results(dense_hits)
+        corpus_results = _scored_points_to_results(corpus_hits)
+
+        # BM25 is synchronous and fast enough not to need an executor for top-k corpora.
+        bm25_results = _run_bm25(query_text, corpus_results)
+
+        fused = reciprocal_rank_fusion(dense_results, bm25_results)
+        return fused[:top_k]
 
     @retry(
         stop=stop_after_attempt(2),
@@ -170,6 +409,11 @@ class RetrievalService:
     ) -> None:
         """Upsert a batch of points. Validates tenant_id in each payload before sending.
 
+        Public collection write guard: if a point targets a public collection
+        (collection_id in ctx.public_collection_ids) and the caller is NOT the
+        owning tenant (collection_id NOT in ctx.allowed_collection_ids), a
+        PermissionError is raised before any data reaches Qdrant.
+
         Args:
             ctx: Tenant context. Used for payload validation and audit logging.
             qdrant_collection: Physical Qdrant collection name.
@@ -177,10 +421,19 @@ class RetrievalService:
                 document_id.
 
         Raises:
+            PermissionError: If caller attempts to write to a public collection they
+                do not manage.
             ValueError: If any point payload tenant_id mismatches ctx.tenant_id.
             QdrantUnavailableError: If Qdrant unreachable after retries.
         """
         for point in points:
+            # Public-collection write guard runs BEFORE payload validation so that
+            # a non-owner tenant cannot sneak in writes by spoofing the tenant_id field.
+            raw_collection_id = point.payload.get("collection_id")
+            collection_uuid: UUID | None = (
+                UUID(str(raw_collection_id)) if raw_collection_id else None
+            )
+            _assert_write_allowed_for_public(ctx, collection_uuid)
             _validate_point_payload(ctx, point)
 
         qdrant_points = [
@@ -196,7 +449,7 @@ class RetrievalService:
 
         try:
             await self._upsert_with_retry(qdrant_collection, qdrant_points)
-        except ValueError:
+        except (ValueError, PermissionError):
             raise
         except Exception as exc:
             raise QdrantUnavailableError(str(exc)) from exc
@@ -220,20 +473,35 @@ class RetrievalService:
         ctx: TenantContext,
         qdrant_collection: str,
         document_id: UUID,
+        *,
+        collection_id: UUID | None = None,
     ) -> int:
         """Delete all Qdrant points for a document within the tenant.
+
+        Public collection write guard: callers that supply ``collection_id``
+        trigger a check against ctx.public_collection_ids. If the collection is
+        public and the caller is not the managing tenant, PermissionError is
+        raised before any Qdrant call is made.
 
         Args:
             ctx: Tenant context for scoping the delete.
             qdrant_collection: Physical Qdrant collection name.
             document_id: The document whose chunks to delete.
+            collection_id: Optional collection UUID to enable the public-collection
+                write guard. Callers should always supply this for public collection
+                safety. When None, the guard is skipped (private-only contexts).
 
         Returns:
             Approximate number of points deleted.
 
         Raises:
+            PermissionError: If the collection is public and the caller is not its
+                managing tenant.
             QdrantUnavailableError: If Qdrant unreachable after retries.
         """
+        # Public-collection write guard — reject before touching Qdrant.
+        _assert_write_allowed_for_public(ctx, collection_id)
+
         delete_filter = build_document_delete_filter(
             tenant_id=str(ctx.tenant_id),
             document_id=str(document_id),
@@ -245,6 +513,8 @@ class RetrievalService:
         )
         try:
             result = await self._delete_with_retry(qdrant_collection, delete_filter)
+        except PermissionError:
+            raise
         except Exception as exc:
             raise QdrantUnavailableError(str(exc)) from exc
         return getattr(getattr(result, "result", None), "count", 0) or 0

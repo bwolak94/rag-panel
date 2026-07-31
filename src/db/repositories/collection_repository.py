@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.exceptions import ConflictError, NotFoundError
@@ -19,10 +19,18 @@ class CollectionRepository:
         self._session = session
 
     async def get_by_id(self, collection_id: uuid.UUID, tenant_id: uuid.UUID) -> Collection | None:
-        """Always filters by tenant_id — never returns cross-tenant data."""
+        """Return collection if it belongs to the tenant OR is a public collection.
+
+        Public collections are readable by every tenant. Callers must enforce
+        write restrictions separately (RetrievalService.upsert_batch /
+        delete_by_document check managed_by_tenant_id).
+        """
         q = select(Collection).where(
             Collection.id == collection_id,
-            Collection.tenant_id == tenant_id,
+            or_(
+                Collection.tenant_id == tenant_id,
+                Collection.is_public.is_(True),
+            ),
         )
         return (await self._session.execute(q)).scalar_one_or_none()
 
@@ -141,3 +149,50 @@ class CollectionRepository:
         """Mark is_active=False. Async DeletionService handles Qdrant/MinIO cleanup."""
         collection.is_active = False
         await self._session.flush()
+
+    async def get_public_collections(self) -> list[Collection]:
+        """Return all active public collections regardless of tenant.
+
+        These collections are readable by every tenant. This method has NO
+        tenant_id parameter by design — it is the one intentional cross-tenant
+        read that returns only platform-wide shared data.
+
+        Returns:
+            List of Collection with is_public=True and is_active=True.
+        """
+        q = select(Collection).where(
+            Collection.is_public.is_(True),
+            Collection.is_active.is_(True),
+        )
+        return list((await self._session.execute(q)).scalars().all())
+
+    async def get_accessible_collections(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        include_inactive: bool = False,
+    ) -> list[Collection]:
+        """Return all collections accessible to a tenant: own + all public.
+
+        Used when building TenantContext.public_collection_ids for retrieval.
+
+        Args:
+            tenant_id: The calling tenant's UUID.
+            include_inactive: When False (default), only active collections are
+                returned. Pass True for admin tooling.
+
+        Returns:
+            Union of the tenant's own collections and all public collections.
+            No duplicates — a collection owned by the tenant that also has
+            is_public=True appears only once.
+        """
+        base_filter = or_(
+            Collection.tenant_id == tenant_id,
+            Collection.is_public.is_(True),
+        )
+        filters = [base_filter]
+        if not include_inactive:
+            filters.append(Collection.is_active.is_(True))
+
+        q = select(Collection).where(and_(*filters))
+        return list((await self._session.execute(q)).scalars().all())

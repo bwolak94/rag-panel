@@ -12,6 +12,7 @@ GDPR rules:
 from __future__ import annotations
 
 import enum
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -32,6 +33,11 @@ class Section(BaseModel):
     text: str
     page: int | None = None
     section_index: int
+    # Vision extraction fields — only set for image/table sections extracted by Docling.
+    # section_type defaults to "text"; set to "image" or "table" for visual content.
+    # image_b64 holds the base64-encoded PNG/JPEG for vision model input (GDPR: never log).
+    section_type: str = "text"  # "text" | "image" | "table" | "diagram"
+    image_b64: str | None = None  # GDPR: never log — contains document visual content
 
 
 class ValidationResult(BaseModel):
@@ -70,6 +76,16 @@ class IngestState(BaseModel):
     chunks: list[ChunkData] | None = None
     embeddings: list[list[float]] | None = None
     point_ids: list[UUID] | None = None
+    # Graph RAG enrichment — set by node_extract_entities (opt-in per collection).
+    # Each element is {"entities": [...], "relations": [...]} from one extraction batch.
+    # None when graph_rag_enabled=False or extraction was skipped/failed.
+    # GDPR: list contents are derived from document text — never log values.
+    extracted_entities: list[dict[str, Any]] | None = None
+
+    # Vision extraction — set by node_extract_vision (opt-in per collection).
+    # Counts how many vision-derived ChunkData items were appended to state.chunks.
+    # 0 when vision_extraction_enabled=False or no image/table sections were present.
+    vision_chunks_count: int = 0
 
     # Pipeline control
     status: str = "uploaded"

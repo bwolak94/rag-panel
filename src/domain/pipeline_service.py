@@ -10,12 +10,6 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.pipeline import (
-    PipelineCreate,
-    PipelineListResponse,
-    PipelineResponse,
-    PipelineUpdate,
-)
 from src.core.exceptions import DomainValidationError, NotFoundError
 from src.db.models.rag_pipeline import RagPipeline
 from src.db.repositories.collection_repository import CollectionRepository
@@ -23,6 +17,12 @@ from src.db.repositories.model_repository import ModelRepository
 from src.db.repositories.pipeline_repository import PipelineRepository
 from src.domain.audit_service import AuditService
 from src.domain.auth import UserContext
+from src.domain.schemas.pipeline import (
+    PipelineCreate,
+    PipelineListResponse,
+    PipelineResponse,
+    PipelineUpdate,
+)
 
 
 class PipelineService:

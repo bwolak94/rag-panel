@@ -395,21 +395,31 @@ Many-to-many: users to roles. A user can have multiple roles within their tenant
 
 A collection is a logical grouping of documents within a tenant. Each collection has its own embedding model, chunking strategy, and access control configuration.
 
+**Public collections** (`is_public = true`) are platform-wide shared knowledge bases (ICD-11, pharmacopoeia, clinical protocols) managed by a designated platform-admin tenant (`managed_by_tenant_id`). They are readable by all tenants but writable only by the managing tenant. `NULL` in `managed_by_tenant_id` means the collection is system-owned and cannot be written by any single tenant.
+
 | Column | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | `UUID` | PK, DEFAULT `gen_random_uuid()` | |
-| `tenant_id` | `UUID` | NOT NULL, FK `tenants(id)` | |
+| `tenant_id` | `UUID` | NOT NULL, FK `tenants(id)` ON DELETE CASCADE | Owning tenant. For public collections this is still the creating tenant. |
 | `name` | `VARCHAR(255)` | NOT NULL | Collection display name, unique within tenant |
 | `description` | `TEXT` | | |
 | `embedding_model_id` | `UUID` | NOT NULL, FK `models_registry(id)` | Embedding model used for this collection. Changing this requires full reindexation. |
 | `chunk_config` | `JSONB` | NOT NULL, DEFAULT `'{"strategy": "recursive", "chunk_size": 512, "overlap": 64, "min_chunk_size": 64}'` | Chunking parameters: `{strategy, chunk_size, overlap, min_chunk_size, separators, document_type_overrides}`. Strategy: `recursive`, `semantic`, `by_section`. See Section 8 for full schema. |
 | `validation_config` | `JSONB` | NOT NULL, DEFAULT `'{"confidence_threshold": 0.7, "require_review": false}'` | Ingest validation: `{confidence_threshold, require_review, allowed_categories, pii_action}` |
+| `search_config` | `JSONB` | nullable | Per-collection retrieval overrides: `{search_mode, top_k, score_threshold}`. `NULL` = use application defaults. |
 | `is_active` | `BOOLEAN` | NOT NULL, DEFAULT `true` | |
+| `is_public` | `BOOLEAN` | NOT NULL, DEFAULT `false` | When `true`, this collection is readable by every tenant. Write access restricted to `managed_by_tenant_id`. Migration: `0007_public_collections`. |
+| `managed_by_tenant_id` | `UUID` | nullable, FK `tenants(id)` ON DELETE SET NULL | The tenant (platform-admin org) allowed to write this public collection. `NULL` = system-owned, no tenant may write. |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT `now()` | |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT `now()` | |
 
-**Indexes:** `tenant_id`, `embedding_model_id`.
+**Indexes:** `tenant_id`, `embedding_model_id`, `is_public` (`ix_collections_is_public`), `managed_by_tenant_id`.
 **Unique constraint:** `(tenant_id, name)`.
+
+**Security contract for public collections (enforced in `RetrievalService`, not in SQL):**
+- Read filter: `(tenant_id = caller AND collection_id IN allowed_ids) OR (collection_id IN public_ids)` — implemented in `filters.build_read_filter()`.
+- Write guard: if `collection_id IN public_collection_ids AND collection_id NOT IN allowed_collection_ids` → `PermissionError` before any Qdrant call (`_assert_write_allowed_for_public()`).
+- The managing tenant must have the public collection in its own `allowed_collection_ids` (granted via `CollectionAccess`) to satisfy the write guard.
 
 ---
 

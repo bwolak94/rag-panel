@@ -1,0 +1,146 @@
+name: RAG Eval
+
+# Runs only when RAG-related files are modified in a pull request.
+# Path filters are intentionally narrow: touching prompt templates,
+# retrieval logic, chunking nodes, or query graph nodes may affect
+# faithfulness / relevancy / precision / recall — so we gate on those.
+#
+# The eval suite uses mocked LLM calls (no inference server required)
+# and must complete in < 60 seconds on ubuntu-latest.
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "src/graphs/prompts/**"
+      - "src/retrieval/**"
+      - "src/ingest/chunking/**"
+      - "src/graphs/ingest_graph/nodes/node_chunk*"
+      - "src/graphs/query_graph/**"
+      - "tests/eval/**"
+
+jobs:
+  eval:
+    name: RAG quality regression check
+    runs-on: ubuntu-latest
+
+    permissions:
+      # Required for actions/github-script to post PR comments
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run RAG eval suite
+        id: eval
+        env:
+          # Block all real LLM / embedding calls — suite must be fully offline
+          LLM_BASE_URL: "http://127.0.0.1:0/v1"
+          EMBEDDING_BASE_URL: "http://127.0.0.1:0/v1"
+          SECRET_KEY: "ci-secret-key-minimum-32-chars!!"
+          DATABASE_URL: "postgresql+asyncpg://raguser:ragpass@localhost:5432/ragdb"
+          REDIS_URL: "redis://localhost:6379/0"
+          MINIO_ENDPOINT: "localhost:9000"
+          MINIO_ACCESS_KEY: "minioadmin"
+          MINIO_SECRET_KEY: "minioadmin"
+          QDRANT_URL: "http://localhost:6333"
+          KEYCLOAK_BASE_URL: "http://localhost:8080"
+          KEYCLOAK_REALM: "rag-platform"
+          KEYCLOAK_CLIENT_ID: "rag-api"
+          KEYCLOAK_AUDIENCE: "rag-api"
+          MINIO_WEBHOOK_SECRET: "ci-webhook-secret"
+        run: |
+          uv run pytest tests/eval/ -m eval -v --tb=short \
+            2>&1 | tee eval_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate metrics report
+        id: report
+        if: always()
+        run: |
+          # Build the markdown comment body.
+          # metrics_reporter.py exits 1 on regression (redundant with pytest
+          # but gives a clear artefact for the comment step).
+          if [ -f tests/eval/results.json ]; then
+            COMMENT=$(uv run python tests/eval/metrics_reporter.py tests/eval/results.json 2>/dev/null || true)
+          else
+            COMMENT="**RAG Eval did not produce a results file.** Check the eval step logs."
+          fi
+          # Write to a file to avoid shell quoting issues with multi-line strings
+          echo "$COMMENT" > eval_comment.md
+          echo "comment_file=eval_comment.md" >> "$GITHUB_OUTPUT"
+
+      - name: Post metrics as PR comment
+        uses: actions/github-script@v7
+        if: always() && github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const commentFile = '${{ steps.report.outputs.comment_file }}';
+            let body;
+            try {
+              body = fs.readFileSync(commentFile, 'utf8');
+            } catch (e) {
+              body = '**RAG Eval:** Could not read metrics report. Check workflow logs.';
+            }
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            // Update the existing bot comment instead of spamming new ones
+            const botComment = comments.find(
+              c => c.user.type === 'Bot' && c.body.includes('RAG Evaluation Results')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail build on eval regression
+        if: steps.eval.outputs.exit_code != '0'
+        run: |
+          echo "RAG eval failed — one or more metrics regressed >5% below baseline."
+          echo "See the PR comment for details."
+          exit 1
+
+      - name: Upload eval artefacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rag-eval-results
+          path: |
+            tests/eval/results.json
+            eval_output.txt
+            eval_comment.md
+          retention-days: 30

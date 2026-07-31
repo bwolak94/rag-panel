@@ -43,6 +43,20 @@ class QueryState(BaseModel):
     retrieved_chunks: list[dict[str, Any]] = Field(default_factory=list)
     graded_chunks: list[dict[str, Any]] = Field(default_factory=list)
 
+    # Reranking — node_rerank is a pass-through when rerank_enabled=False (default)
+    rerank_enabled: bool = False
+    rerank_top_k: int | None = None  # None → keep all chunks after reranking
+
+    # Token budget — controls context trimming in node_generate
+    context_token_budget: int | None = None  # None → no trimming applied
+    chunks_trimmed: int = 0  # count of chunks dropped due to budget; for observability
+
+    # Graph RAG — set by node_graph_retrieve (opt-in via prompt_config.graph_rag_enabled)
+    # Each element: {"entity": str, "entity_type": str, "icd_code": str|None,
+    #                "related": [{"name": str, "relation": str, "confidence": float}]}
+    # None when graph_rag_enabled=False or no matching entities were found.
+    graph_context: list[dict[str, Any]] | None = None
+
     # Output — set by generate / guardrails
     answer: str | None = None
     citations: list[dict[str, Any]] = Field(default_factory=list)

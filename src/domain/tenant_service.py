@@ -10,7 +10,13 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.tenant import (
+from src.core.clients.minio_client import create_tenant_bucket
+from src.core.exceptions import NotFoundError
+from src.db.repositories.auth_repository import invalidate_user_context_cache
+from src.db.repositories.tenant_repository import TenantRepository
+from src.domain.audit_service import AuditService
+from src.domain.auth import UserContext
+from src.domain.schemas.tenant import (
     AddUserRequest,
     AssignRoleRequest,
     TenantCreate,
@@ -18,12 +24,6 @@ from src.api.schemas.tenant import (
     TenantResponse,
     TenantUpdate,
 )
-from src.core.clients.minio_client import create_tenant_bucket
-from src.core.exceptions import NotFoundError
-from src.db.repositories.auth_repository import invalidate_user_context_cache
-from src.db.repositories.tenant_repository import TenantRepository
-from src.domain.audit_service import AuditService
-from src.domain.auth import UserContext
 
 
 class TenantService:

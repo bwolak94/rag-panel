@@ -90,6 +90,7 @@ async def node_grade_documents(state: QueryState, config: dict[str, Any]) -> dic
         _lf_update_span(
             metadata={
                 "tenant_id": str(state.tenant_id),
+                "model_id": str(state.llm_model_id),
                 "relevant_count": 0,
                 "total_count": 0,
             }
@@ -151,8 +152,10 @@ async def node_grade_documents(state: QueryState, config: dict[str, Any]) -> dic
     _lf_update_span(
         metadata={
             "tenant_id": str(state.tenant_id),
-            "relevant_count": len(graded_chunks),
+            "model_id": str(model_record.id),
             "total_count": len(chunks),
+            "relevant_count": len(graded_chunks),
+            "no_results": no_results,
         }
     )
     logger.info(

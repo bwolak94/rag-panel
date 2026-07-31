@@ -4,6 +4,8 @@ from src.graphs.ingest_graph.nodes.node_chunk import node_chunk
 from src.graphs.ingest_graph.nodes.node_dedupe import node_dedupe
 from src.graphs.ingest_graph.nodes.node_embed import node_embed
 from src.graphs.ingest_graph.nodes.node_extract import node_extract
+from src.graphs.ingest_graph.nodes.node_extract_entities import node_extract_entities
+from src.graphs.ingest_graph.nodes.node_extract_vision import node_extract_vision
 from src.graphs.ingest_graph.nodes.node_fetch import node_fetch
 from src.graphs.ingest_graph.nodes.node_persist import node_persist
 from src.graphs.ingest_graph.nodes.node_pii_scan import node_pii_scan
@@ -17,6 +19,8 @@ __all__ = [
     "node_validate",
     "node_pii_scan",
     "node_chunk",
+    "node_extract_vision",
+    "node_extract_entities",
     "node_embed",
     "node_upsert",
     "node_persist",

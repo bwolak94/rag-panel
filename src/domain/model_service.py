@@ -12,13 +12,13 @@ from typing import TYPE_CHECKING
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.model import ModelCreate, ModelListResponse, ModelResponse, ModelUpdate
 from src.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError
 from src.db.models.models_registry import ModelsRegistry
 from src.db.repositories.model_repository import ModelRepository
 from src.db.repositories.pipeline_repository import PipelineRepository
 from src.domain.audit_service import AuditService
 from src.domain.auth import UserContext
+from src.domain.schemas.model import ModelCreate, ModelListResponse, ModelResponse, ModelUpdate
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -294,6 +294,50 @@ class ModelService:
         if record.type != "embedding":
             raise PermissionDeniedError("Model is not of type 'embedding'")
         return self._build_openai_client(record)
+
+    async def update_score_threshold(
+        self,
+        model_id: uuid.UUID,
+        threshold: float,
+        sample_count: int,
+    ) -> None:
+        """Persist a calibrated score threshold on the model record.
+
+        Called exclusively by ThresholdCalibrationService after a sweep. Uses
+        the unscoped get_by_id path so system-wide models can also be calibrated
+        without tenant ownership checks (calibration is an internal platform op).
+
+        Args:
+            model_id: The model UUID to update.
+            threshold: Calibrated threshold in [0.0, 1.0] from F1-maximising sweep.
+            sample_count: Number of EvalResult items used to derive the threshold.
+
+        Raises:
+            NotFoundError: If no model with model_id exists.
+        """
+        result = await self._repo.update_calibration(model_id, threshold, sample_count)
+        if result is None:
+            raise NotFoundError("Model not found")
+        logger.info(
+            "model.threshold_calibrated",
+            model_id=str(model_id),
+            threshold=threshold,
+            sample_count=sample_count,
+        )
+
+    async def get_calibrated_threshold(self, model_id: uuid.UUID) -> float | None:
+        """Return the last calibrated score threshold for a model.
+
+        Returns None when no calibration run has been persisted yet, signalling
+        the caller to fall back to the application or collection default.
+
+        Args:
+            model_id: The model UUID.
+
+        Returns:
+            Calibrated threshold float or None.
+        """
+        return await self._repo.get_calibrated_threshold(model_id)
 
     async def validate_model_reachable(self, model_id: uuid.UUID, ctx: UserContext) -> bool:
         """Check if the model endpoint responds to GET /models.
