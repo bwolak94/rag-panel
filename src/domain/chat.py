@@ -16,13 +16,13 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.chat import ChatMessage, MessageSourceOut
 from src.core.clients.llm_client import LLMClient
 from src.core.exceptions import ConversationNotFoundError
 from src.db.models.conversation import Conversation
 from src.db.models.message import Message
 from src.db.models.rag_pipeline import RagPipeline
 from src.domain.auth import UserContext
+from src.domain.schemas.chat import ChatMessage, MessageSourceOut
 
 logger = structlog.get_logger(__name__)
 

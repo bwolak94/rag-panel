@@ -12,13 +12,13 @@ from typing import TYPE_CHECKING
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.model import ModelCreate, ModelListResponse, ModelResponse, ModelUpdate
 from src.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError
 from src.db.models.models_registry import ModelsRegistry
 from src.db.repositories.model_repository import ModelRepository
 from src.db.repositories.pipeline_repository import PipelineRepository
 from src.domain.audit_service import AuditService
 from src.domain.auth import UserContext
+from src.domain.schemas.model import ModelCreate, ModelListResponse, ModelResponse, ModelUpdate
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI

@@ -10,7 +10,12 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.collection import (
+from src.core.exceptions import NotFoundError
+from src.db.repositories.collection_repository import CollectionRepository
+from src.db.repositories.model_repository import ModelRepository
+from src.domain.audit_service import AuditService
+from src.domain.auth import UserContext, require_collection_read
+from src.domain.schemas.collection import (
     ChunkConfig,
     CollectionCreate,
     CollectionListResponse,
@@ -19,11 +24,6 @@ from src.api.schemas.collection import (
     EmbeddingModelRef,
     ValidationConfig,
 )
-from src.core.exceptions import NotFoundError
-from src.db.repositories.collection_repository import CollectionRepository
-from src.db.repositories.model_repository import ModelRepository
-from src.domain.audit_service import AuditService
-from src.domain.auth import UserContext, require_collection_read
 from src.retrieval.service import RetrievalService
 
 

@@ -11,10 +11,6 @@ import structlog
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.document import (
-    DocumentUploadRequest,
-    DocumentUploadResponse,
-)
 from src.core.clients.minio_client import get_minio_client
 from src.core.config import settings
 from src.core.exceptions import (
@@ -27,6 +23,10 @@ from src.db.repositories.document_repository import DocumentRepository
 from src.db.repositories.tenant_repository import TenantRepository
 from src.domain.audit_service import AuditService
 from src.domain.auth import UserContext
+from src.domain.schemas.document import (
+    DocumentUploadRequest,
+    DocumentUploadResponse,
+)
 
 logger = structlog.get_logger(__name__)
 

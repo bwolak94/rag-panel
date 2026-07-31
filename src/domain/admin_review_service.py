@@ -19,7 +19,13 @@ from typing import Any
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.admin_review import (
+from src.core.clients.minio_client import get_minio_client
+from src.core.exceptions import InvalidDocumentStateError, NotFoundError
+from src.db.repositories.document_repository import DocumentRepository
+from src.db.repositories.ingestion_job_repository import IngestionJobRepository
+from src.domain.audit_service import AuditService
+from src.domain.auth import UserContext
+from src.domain.schemas.admin_review import (
     ApproveDocumentRequest,
     DocumentReviewDetail,
     IngestionJobDetail,
@@ -31,12 +37,6 @@ from src.api.schemas.admin_review import (
     ValidationIssue,
     ValidationResultSchema,
 )
-from src.core.clients.minio_client import get_minio_client
-from src.core.exceptions import InvalidDocumentStateError, NotFoundError
-from src.db.repositories.document_repository import DocumentRepository
-from src.db.repositories.ingestion_job_repository import IngestionJobRepository
-from src.domain.audit_service import AuditService
-from src.domain.auth import UserContext
 
 logger = structlog.get_logger(__name__)
 
