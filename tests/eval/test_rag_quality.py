@@ -413,9 +413,12 @@ def test_print_metrics_summary(
 ) -> None:
     """Print a summary table of all metrics vs baseline.  Always passes.
 
-    This test exists solely to produce readable output in CI logs.
-    The metrics_reporter.py script formats this same table as a PR comment.
+    Also writes tests/eval/results.json in the flat format consumed by
+    metrics_reporter.py, so the CI comment step works without requiring the
+    optional pytest-json-report plugin.
     """
+    import json
+
     lines = [
         "",
         "RAG Evaluation Metrics",
@@ -431,5 +434,10 @@ def test_print_metrics_summary(
         lines.append(f"{metric:<22} {current:>9.4f} {base:>9.4f} {sign}{delta:>8.4f}")
     lines.append("=" * 52)
     print("\n".join(lines))
-    # This test always passes — it only exists for human-readable output.
-    assert True
+
+    # Write results.json so metrics_reporter.py can produce the PR comment
+    # without needing pytest-json-report.
+    results_path = EVAL_DIR / "results.json"
+    results_path.write_text(json.dumps(medical_metrics, indent=2), encoding="utf-8")
+
+    assert True  # always passes — exists only for output + results artifact

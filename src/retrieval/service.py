@@ -20,7 +20,7 @@ from qdrant_client.models import (
     PointStruct,
     VectorParams,
 )
-from rank_bm25 import BM25Okapi
+from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
 from tenacity import (
     retry,
     retry_if_not_exception_type,
