@@ -17,7 +17,11 @@ from typing import Any
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.audit_log_viewer import AuditLogActionsResponse, AuditLogItem, AuditLogListResponse
+from src.api.schemas.audit_log_viewer import (
+    AuditLogActionsResponse,
+    AuditLogItem,
+    AuditLogListResponse,
+)
 from src.db.repositories.audit_log_repository import AuditLogRepository
 from src.domain.auth import UserContext
 

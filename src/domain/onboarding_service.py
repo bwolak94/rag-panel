@@ -12,6 +12,7 @@ Security:
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -105,7 +106,11 @@ class OnboardingService:
 
     def _session_to_status(self, obj: OnboardingSession) -> SessionStatusResponse:
         next_step = obj.current_step + 1 if obj.current_step < _STEPS_TOTAL else None
-        next_url = f"/api/v1/platform/onboarding/sessions/{obj.id}/steps/{next_step}" if next_step else None
+        next_url = (
+            f"/api/v1/platform/onboarding/sessions/{obj.id}/steps/{next_step}"
+            if next_step
+            else None
+        )
         return SessionStatusResponse(
             session_id=obj.id,
             tenant_id=obj.tenant_id,
@@ -149,7 +154,9 @@ class OnboardingService:
                 raise NotFoundError("Tenant not found")
             await tenant_repo.update(tenant, name=body.display_name, settings=body.settings)
 
-        await self._mark_step_complete(obj, step=1, extra_config={"display_name": body.display_name})
+        await self._mark_step_complete(
+            obj, step=1, extra_config={"display_name": body.display_name}
+        )
         return StepResultResponse(
             session_id=session_id, step_completed=1, next_step=2,
             message="Tenant configuration saved."
@@ -235,10 +242,8 @@ class OnboardingService:
 
         tenant_id = obj.tenant_id
         # Add user to tenant (idempotent — ConflictError swallowed)
-        try:
+        with contextlib.suppress(ConflictError):
             await tenant_repo.add_user(tenant_id, user.id)
-        except ConflictError:
-            pass  # already a member — idempotent
 
         await tenant_repo.assign_role(tenant_id, user.id, body.role)
         await self._mark_step_complete(obj, step=3, extra_config={"admin_user_id": str(user.id)})
@@ -279,7 +284,9 @@ class OnboardingService:
         else:
             pipeline.config = pipeline_config
 
-        await self._mark_step_complete(obj, step=4, extra_config={"pipeline_name": body.pipeline_name})
+        await self._mark_step_complete(
+            obj, step=4, extra_config={"pipeline_name": body.pipeline_name}
+        )
         return StepResultResponse(
             session_id=session_id, step_completed=4, next_step=5,
             message="Pipeline configured."

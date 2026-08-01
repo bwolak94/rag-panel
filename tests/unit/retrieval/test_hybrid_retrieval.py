@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from qdrant_client.models import SparseVector
 
-from src.retrieval.schemas import QdrantPoint, RetrievalResult, SearchMode, TenantContext
-from src.retrieval.service import RetrievalService, _encode_sparse_sync, _get_sparse_encoder
+from src.retrieval.schemas import QdrantPoint, RetrievalResult, TenantContext
+from src.retrieval.service import RetrievalService, _encode_sparse_sync
 
 # ---------------------------------------------------------------------------
 # Shared test fixtures

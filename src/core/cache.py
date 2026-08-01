@@ -69,7 +69,12 @@ class RAGCache:
     that cache failures never block the query path.
     """
 
-    def __init__(self, redis: Any, retrieval_ttl: int = DEFAULT_RETRIEVAL_TTL, response_ttl: int = DEFAULT_RESPONSE_TTL) -> None:
+    def __init__(
+        self,
+        redis: Any,
+        retrieval_ttl: int = DEFAULT_RETRIEVAL_TTL,
+        response_ttl: int = DEFAULT_RESPONSE_TTL,
+    ) -> None:
         self._redis = redis
         self._retrieval_ttl = retrieval_ttl
         self._response_ttl = response_ttl

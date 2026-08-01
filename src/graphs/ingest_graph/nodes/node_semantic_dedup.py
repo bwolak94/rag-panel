@@ -10,7 +10,8 @@ If disabled, this node is not inserted into the graph (graph.py controls topolog
 Config keys read from collection.chunk_config (all optional):
   "semantic_dedup_enabled": bool   — opt-in flag (default False — must be explicit)
   "dedup_threshold": float         — similarity threshold to flag as near-duplicate (default 0.95)
-  "reject_near_duplicates": bool   — if True, reject immediately; else route to needs_review (default False)
+  "reject_near_duplicates": bool   — if True, reject immediately; else route to needs_review
+                                     (default False)
 
 Similarity algorithm: cosine similarity computed in Python over mean-pooled embeddings.
 Scales linearly with collection size; suitable for up to ~5 000 documents per collection.
@@ -187,7 +188,7 @@ async def node_semantic_dedup(state: IngestState, config: dict[str, Any]) -> dic
                 started_at=step_start,
                 meta=meta,
             )
-            _lf_update_span(metadata={**lf_meta, "result": "near_duplicate", "routed_to": new_status})
+            _lf_update_span(metadata={**lf_meta, "result": "near_duplicate", "routed_to": new_status})  # noqa: E501
             logger.info(
                 "node_semantic_dedup.near_duplicate",
                 document_id=str(state.document_id),
