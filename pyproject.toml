@@ -78,6 +78,7 @@ exclude = ["tests/", "src/db/migrations/"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
+addopts = "-m 'not eval and not integration'"
 markers = [
     "integration: requires testcontainers (Docker)",
     "tenant_isolation: blocker — must pass before merge",

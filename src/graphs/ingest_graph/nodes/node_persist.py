@@ -154,6 +154,21 @@ async def node_persist(state: IngestState, config: dict[str, Any]) -> dict[str, 
                 "latency_ms": elapsed,
             }
         )
+        # Invalidate retrieval cache for this collection so that subsequent queries
+        # reflect the newly indexed document. Errors are swallowed — cache failure
+        # must never block the ingest success path.
+        try:
+            from src.core.cache import get_rag_cache
+
+            cache = get_rag_cache()
+            await cache.invalidate_collection(state.tenant_id, state.collection_id)
+        except Exception as cache_exc:
+            logger.warning(
+                "node_persist.cache_invalidation_failed",
+                document_id=str(state.document_id),
+                error=type(cache_exc).__name__,
+            )
+
         logger.info(
             "node_persist_completed",
             document_id=str(state.document_id),

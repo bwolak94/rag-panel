@@ -30,3 +30,10 @@ def route_after_pii(state: IngestState) -> str:
     if state.status == "needs_review":
         return END
     return "node_chunk"
+
+
+def route_after_semantic_dedup(state: IngestState) -> str:
+    """Halt on near-duplicate (needs_review or rejected) → END; otherwise → node_upsert."""
+    if state.halt or state.status in ("needs_review", "rejected"):
+        return END
+    return "node_upsert"

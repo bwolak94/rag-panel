@@ -1,0 +1,70 @@
+{"id": "q001", "question": "Jakie są wskazania do stosowania ibuprofenu?", "type": "substantive", "expected_source_keywords": ["ibuprofen", "NLPZ", "ból", "przeciwzapalne"], "collection_hint": "pharmacology"}
+{"id": "q002", "question": "Jakie dokumenty są wymagane przy przyjęciu pacjenta do szpitala?", "type": "substantive", "expected_source_keywords": ["przyjęcie", "dokumentacja", "pacjent", "szpital"], "collection_hint": "procedures"}
+{"id": "q003", "question": "Jak postępować w przypadku wstrząsu anafilaktycznego?", "type": "substantive", "expected_source_keywords": ["anafilaksja", "wstrząs", "adrenalina", "alergia"], "collection_hint": "emergency"}
+{"id": "q004", "question": "Jakie są przeciwwskazania do stosowania metforminy?", "type": "substantive", "expected_source_keywords": ["metformina", "cukrzyca", "przeciwwskazania", "nerki"], "collection_hint": "pharmacology"}
+{"id": "q005", "question": "Jakie badania należy wykonać przed zabiegiem operacyjnym?", "type": "substantive", "expected_source_keywords": ["badania", "preoperacyjne", "morfologia", "EKG"], "collection_hint": "procedures"}
+{"id": "q006", "question": "Jak długo trwa kwarantanna przy grypie?", "type": "substantive", "expected_source_keywords": ["grypa", "kwarantanna", "izolacja", "dni"], "collection_hint": "procedures"}
+{"id": "q007", "question": "Jakie są objawy zapalenia wyrostka robaczkowego?", "type": "substantive", "expected_source_keywords": ["wyrostek", "zapalenie", "ból brzucha", "appendix"], "collection_hint": "clinical"}
+{"id": "q008", "question": "Jaka jest dawka paracetamolu dla dorosłych?", "type": "substantive", "expected_source_keywords": ["paracetamol", "dawka", "dorosły", "mg"], "collection_hint": "pharmacology"}
+{"id": "q009", "question": "Co to jest skala Glasgow i jak ją interpretować?", "type": "substantive", "expected_source_keywords": ["Glasgow", "skala", "świadomość", "punkty"], "collection_hint": "clinical"}
+{"id": "q010", "question": "Jakie są zasady sterylizacji narzędzi medycznych?", "type": "substantive", "expected_source_keywords": ["sterylizacja", "narzędzia", "autoklav", "dezynfekcja"], "collection_hint": "procedures"}
+{"id": "q011", "question": "Jak postępować z pacjentem po zawale mięśnia sercowego?", "type": "substantive", "expected_source_keywords": ["zawał", "serce", "reperfuzja", "postępowanie"], "collection_hint": "emergency"}
+{"id": "q012", "question": "Jakie są objawy hipoglikemii i jak ją leczyć?", "type": "substantive", "expected_source_keywords": ["hipoglikemia", "cukier", "glukoza", "leczenie"], "collection_hint": "clinical"}
+{"id": "q013", "question": "Jakie są zasady przetaczania krwi?", "type": "substantive", "expected_source_keywords": ["transfuzja", "krew", "przetaczanie", "grupa"], "collection_hint": "procedures"}
+{"id": "q014", "question": "Jakie leki są stosowane w leczeniu nadciśnienia tętniczego?", "type": "substantive", "expected_source_keywords": ["nadciśnienie", "leki", "ACE", "beta-bloker"], "collection_hint": "pharmacology"}
+{"id": "q015", "question": "Jak postępować przy podejrzeniu udaru mózgu?", "type": "substantive", "expected_source_keywords": ["udar", "mózg", "TIA", "postępowanie"], "collection_hint": "emergency"}
+{"id": "q016", "question": "Jakie są wskazania do hospitalizacji dzieci?", "type": "substantive", "expected_source_keywords": ["hospitalizacja", "dziecko", "wskazania", "pediatria"], "collection_hint": "procedures"}
+{"id": "q017", "question": "Czym różni się infekcja bakteryjna od wirusowej?", "type": "substantive", "expected_source_keywords": ["bakteria", "wirus", "infekcja", "różnica"], "collection_hint": "clinical"}
+{"id": "q018", "question": "Jakie są zasady antyseptyki ran?", "type": "substantive", "expected_source_keywords": ["antyseptyka", "rana", "dezynfekcja", "opatrunek"], "collection_hint": "procedures"}
+{"id": "q019", "question": "Jakie badania wykonuje się przy podejrzeniu zapalenia płuc?", "type": "substantive", "expected_source_keywords": ["zapalenie płuc", "RTG", "CRP", "badania"], "collection_hint": "clinical"}
+{"id": "q020", "question": "Jak prawidłowo wykonać pomiar ciśnienia krwi?", "type": "substantive", "expected_source_keywords": ["ciśnienie", "pomiar", "sfingomanometr", "technika"], "collection_hint": "procedures"}
+{"id": "q021", "question": "Jakie są wskazania do stosowania antybiotyków?", "type": "substantive", "expected_source_keywords": ["antybiotyk", "wskazania", "bakterie", "zakażenie"], "collection_hint": "pharmacology"}
+{"id": "q022", "question": "Co to jest PEEP i kiedy się stosuje?", "type": "substantive", "expected_source_keywords": ["PEEP", "wentylacja", "płuca", "oddech"], "collection_hint": "clinical"}
+{"id": "q023", "question": "Jakie są powikłania długotrwałego leżenia?", "type": "substantive", "expected_source_keywords": ["odleżyny", "zakrzepica", "unieruchomienie", "powikłania"], "collection_hint": "clinical"}
+{"id": "q024", "question": "Jakie są zasady izolacji pacjenta z gruźlicą?", "type": "substantive", "expected_source_keywords": ["gruźlica", "izolacja", "respirator", "TB"], "collection_hint": "procedures"}
+{"id": "q025", "question": "Jak postępować przy złamaniu kości?", "type": "substantive", "expected_source_keywords": ["złamanie", "unieruchomienie", "gips", "orteza"], "collection_hint": "emergency"}
+{"id": "q026", "question": "Jakie są objawy niedoczynności tarczycy?", "type": "substantive", "expected_source_keywords": ["tarczyca", "niedoczynność", "TSH", "objawy"], "collection_hint": "clinical"}
+{"id": "q027", "question": "Jaka jest procedura mycia rąk przed zabiegiem?", "type": "substantive", "expected_source_keywords": ["mycie rąk", "chirurgiczne", "procedura", "aseptyka"], "collection_hint": "procedures"}
+{"id": "q028", "question": "Jakie są kryteria rozpoznania sepsy?", "type": "substantive", "expected_source_keywords": ["sepsa", "kryteria", "qSOFA", "zakażenie"], "collection_hint": "clinical"}
+{"id": "q029", "question": "Jakie leki są stosowane w resuscytacji krążeniowo-oddechowej?", "type": "substantive", "expected_source_keywords": ["resuscytacja", "adrenalina", "RKO", "leki"], "collection_hint": "emergency"}
+{"id": "q030", "question": "Jak oceniać ból u pacjenta?", "type": "substantive", "expected_source_keywords": ["ból", "skala", "VAS", "ocena"], "collection_hint": "procedures"}
+{"id": "q031", "question": "Jakie są zasady postępowania z odpadami medycznymi?", "type": "substantive", "expected_source_keywords": ["odpady", "medyczne", "segregacja", "utylizacja"], "collection_hint": "procedures"}
+{"id": "q032", "question": "Co to jest INR i w jakich sytuacjach go monitorować?", "type": "substantive", "expected_source_keywords": ["INR", "krzepnięcie", "warfaryna", "monitorowanie"], "collection_hint": "clinical"}
+{"id": "q033", "question": "Jakie są objawy odwodnienia u dzieci?", "type": "substantive", "expected_source_keywords": ["odwodnienie", "dziecko", "objawy", "nawodnienie"], "collection_hint": "clinical"}
+{"id": "q034", "question": "Jak postępować przy oparzeniu chemicznym?", "type": "substantive", "expected_source_keywords": ["oparzenie", "chemiczne", "płukanie", "postępowanie"], "collection_hint": "emergency"}
+{"id": "q035", "question": "Jakie są wskazania do EKG?", "type": "substantive", "expected_source_keywords": ["EKG", "wskazania", "serce", "elektrokardiogram"], "collection_hint": "clinical"}
+{"id": "q036", "question": "Jaka jest procedura podania leku dożylnie?", "type": "substantive", "expected_source_keywords": ["dożylne", "podanie", "wenflona", "procedura"], "collection_hint": "procedures"}
+{"id": "q037", "question": "Jakie są objawy udaru cieplnego?", "type": "substantive", "expected_source_keywords": ["udar cieplny", "hipertermia", "gorączka", "objawy"], "collection_hint": "emergency"}
+{"id": "q038", "question": "Jak leczyć nadciśnieniowy przełom?", "type": "substantive", "expected_source_keywords": ["przełom", "nadciśnienie", "leczenie", "ciśnienie"], "collection_hint": "emergency"}
+{"id": "q039", "question": "Jakie są zasady transportu pacjenta z urazem kręgosłupa?", "type": "substantive", "expected_source_keywords": ["kręgosłup", "uraz", "transport", "stabilizacja"], "collection_hint": "emergency"}
+{"id": "q040", "question": "Co to jest skala APGAR?", "type": "substantive", "expected_source_keywords": ["APGAR", "noworodek", "ocena", "skala"], "collection_hint": "clinical"}
+{"id": "q041", "question": "Jakie są powikłania cukrzycy?", "type": "substantive", "expected_source_keywords": ["cukrzyca", "powikłania", "nefropatia", "retinopatia"], "collection_hint": "clinical"}
+{"id": "q042", "question": "Jak postępować z pacjentem po omdleniu?", "type": "substantive", "expected_source_keywords": ["omdlenie", "postępowanie", "pozycja", "świadomość"], "collection_hint": "emergency"}
+{"id": "q043", "question": "Jakie są zasady tlenoterapii?", "type": "substantive", "expected_source_keywords": ["tlen", "tlenoterapia", "saturacja", "maska"], "collection_hint": "procedures"}
+{"id": "q044", "question": "Jakie badania wykonuje się przy podejrzeniu zawału serca?", "type": "substantive", "expected_source_keywords": ["zawał", "troponina", "EKG", "badania"], "collection_hint": "clinical"}
+{"id": "q045", "question": "Jak rozpoznać zapalenie opon mózgowych?", "type": "substantive", "expected_source_keywords": ["zapalenie opon", "meningitis", "objawy", "rozpoznanie"], "collection_hint": "clinical"}
+{"id": "q046", "question": "Jakie są zasady karmienia przez sondę?", "type": "substantive", "expected_source_keywords": ["sonda", "karmienie", "enteralne", "żywienie"], "collection_hint": "procedures"}
+{"id": "q047", "question": "Co to jest wentylacja mechaniczna i jakie są jej wskazania?", "type": "substantive", "expected_source_keywords": ["wentylacja", "mechaniczna", "wskazania", "respirator"], "collection_hint": "clinical"}
+{"id": "q048", "question": "Jak postępować przy podejrzeniu zatrucia lekami?", "type": "substantive", "expected_source_keywords": ["zatrucie", "leki", "płukanie żołądka", "postępowanie"], "collection_hint": "emergency"}
+{"id": "q049", "question": "Jakie są zasady dokumentacji medycznej?", "type": "substantive", "expected_source_keywords": ["dokumentacja", "medyczna", "historia choroby", "zasady"], "collection_hint": "procedures"}
+{"id": "q050", "question": "Jak leczyć zakażenia układu moczowego?", "type": "substantive", "expected_source_keywords": ["ZUM", "moczowy", "antybiotyk", "leczenie"], "collection_hint": "clinical"}
+{"id": "q051", "question": "Czy morfina leczy cukrzycę?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "false_treatment"}
+{"id": "q052", "question": "Jaki jest przepis na barszcz czerwony podawany pacjentom po zabiegu?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "out_of_scope"}
+{"id": "q053", "question": "Czy aspiryna leczy raka?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "false_treatment"}
+{"id": "q054", "question": "Jakie są ceny procedur w szpitalu w Tokio?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "out_of_scope"}
+{"id": "q055", "question": "Czy ibuprofen jest skuteczny na złamania kości?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "false_premise"}
+{"id": "q056", "question": "Jak zamówić pizzę do oddziału szpitalnego?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "out_of_scope"}
+{"id": "q057", "question": "Czy można leczyć zapalenie płuc przez ssanie magnetycznych kamieni?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "pseudoscience"}
+{"id": "q058", "question": "Jaki jest wynik meczu piłki nożnej z wczoraj?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "out_of_scope"}
+{"id": "q059", "question": "Czy paracetamol jest dobry na złamanie nogi bez gipsu?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "false_premise"}
+{"id": "q060", "question": "Jak prognozować pogodę na podstawie bólu kolana u pacjentów?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "pseudoscience"}
+{"id": "q061", "question": "Jaka jest stolica Australii?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "out_of_scope"}
+{"id": "q062", "question": "Czy transfuzja krwi leczy nadciśnienie tętnicze?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "false_treatment"}
+{"id": "q063", "question": "Jaki jest kurs euro do złotego?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "out_of_scope"}
+{"id": "q064", "question": "Czy antybiotyki są skuteczne na grypę?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "false_treatment"}
+{"id": "q065", "question": "Jak naprawić samochód przy użyciu sprzętu medycznego?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "out_of_scope"}
+{"id": "q066", "question": "Czy podanie insuliny zdrowej osobie bez cukrzycy jest zalecaną procedurą?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "false_premise"}
+{"id": "q067", "question": "Jakie leki należy podać przy grypie żołądkowej zgodnie z dokumentami NASA?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "false_source"}
+{"id": "q068", "question": "Czy można zastąpić resuscytację tańcem?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "pseudoscience"}
+{"id": "q069", "question": "Ile wynosi PKB Polski?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "out_of_scope"}
+{"id": "q070", "question": "Czy przetaczanie soku z buraka zamiast krwi jest opisane w procedurach?", "type": "trap", "expected_answer_type": "not_found", "trap_category": "false_treatment"}

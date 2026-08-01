@@ -17,6 +17,7 @@ from uuid import UUID
 import structlog
 from langfuse import observe
 
+from src.core.cache import get_rag_cache
 from src.core.exceptions import QueryNodeError
 from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.graphs.query_graph.state import QueryState
@@ -79,8 +80,34 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
     retrieval = cfg["retrieval"]
 
     node_start = datetime.now(UTC)
+    query_text = state.rewritten_query or state.question
 
-    # Resolve embedding model from first collection in pipeline
+    # ── Retrieval cache check ─────────────────────────────────────────────────
+    cache = get_rag_cache()
+    cached_chunks = await cache.get_retrieval(
+        tenant_id=state.tenant_id,
+        collection_ids=list(state.allowed_collection_ids),
+        query=query_text,
+    )
+    if cached_chunks is not None:
+        elapsed_ms = int((datetime.now(UTC) - node_start).total_seconds() * 1000)
+        _lf_update_span(
+            metadata={
+                "tenant_id": str(state.tenant_id),
+                "chunk_count": len(cached_chunks),
+                "latency_ms": elapsed_ms,
+                "cache_hit": "retrieval",
+            }
+        )
+        logger.info(
+            "node_retrieve.cache_hit",
+            tenant_id=str(state.tenant_id),
+            chunk_count=len(cached_chunks),
+            latency_ms=elapsed_ms,
+        )
+        return {"retrieved_chunks": cached_chunks}
+
+    # ── Cache miss — resolve embedding model and query Qdrant ─────────────────
     if not state.collection_ids:
         raise QueryNodeError("pipeline has no collection_ids configured")
 
@@ -104,7 +131,6 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
         raise QueryNodeError(f"embedding model not found: {collection.embedding_model_id}")
 
     qdrant_collection = _make_qdrant_collection_name(model_record)
-    query_text = state.rewritten_query or state.question
 
     # Embed the query
     try:
@@ -172,6 +198,7 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
             "score_threshold": score_threshold,
             "chunk_count": len(retrieved_chunks),
             "latency_ms": elapsed_ms,
+            "cache_hit": "miss",
         }
     )
     logger.info(
@@ -181,6 +208,14 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
         chunk_count=len(retrieved_chunks),
         search_mode=search_mode.value,
         latency_ms=elapsed_ms,
+    )
+
+    # Store in retrieval cache for subsequent identical queries
+    await cache.set_retrieval(
+        tenant_id=state.tenant_id,
+        collection_ids=list(state.allowed_collection_ids),
+        query=query_text,
+        chunks=retrieved_chunks,
     )
 
     return {
