@@ -1,6 +1,6 @@
 # TASK-019: Hybrid Retrieval — BM25 + Dense Vector with RRF
 
-**Status:** TODO
+**Status:** DONE
 **Priority:** P1 — retrieval quality improvement; mentioned in roadmap Phase 3
 **Owner:** rag-engineer
 **Reviewer:** python-reviewer (security profile) + security-auditor

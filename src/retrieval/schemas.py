@@ -7,6 +7,7 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from qdrant_client.models import SparseVector
 
 
 class SearchMode(StrEnum):
@@ -59,11 +60,17 @@ class QdrantPoint(BaseModel):
     """Single Qdrant vector point ready for upsert.
 
     payload MUST include tenant_id, collection_id, document_id.
+    sparse_vector is optional — when provided, the point is upserted with named
+    vectors ("dense" + "sparse"), enabling Qdrant-native hybrid search with RRF.
+    When None, the point is upserted with a plain flat vector (backward-compat).
     """
+
+    model_config = {"arbitrary_types_allowed": True}
 
     id: UUID
     vector: list[float]
     payload: dict[str, Any]
+    sparse_vector: SparseVector | None = None  # fastembed BM25 sparse representation
 
 
 @runtime_checkable

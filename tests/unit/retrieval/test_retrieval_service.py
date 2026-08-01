@@ -359,9 +359,12 @@ async def test_search_dense_mode_does_not_call_hybrid() -> None:
 
 @pytest.mark.asyncio
 async def test_search_hybrid_mode_dispatches_to_search_hybrid() -> None:
-    """search() with HYBRID mode dispatches to search_hybrid() (two Qdrant calls)."""
+    """search() with HYBRID mode dispatches to search_hybrid().
+
+    Primary path: ONE Qdrant call using Prefetch + server-side RRF (not two dense calls).
+    The legacy two-dense-call path is only used as fallback when the sparse query fails.
+    """
     service, client = make_service()
-    # Both dense and corpus calls return the same hit set — that is fine for this test.
     hit = make_qdrant_hit(score=0.9)
     client.query_points.return_value = make_query_response([hit])
 
@@ -375,8 +378,8 @@ async def test_search_hybrid_mode_dispatches_to_search_hybrid() -> None:
         query_text="diabetes treatment",
     )
 
-    # Two Qdrant calls: one for dense top_k, one for BM25 corpus (top_k * multiplier)
-    assert client.query_points.call_count == 2
+    # Primary path: ONE query_points call with a Prefetch payload (dense + sparse + RRF).
+    assert client.query_points.call_count == 1
     assert isinstance(results[0], RetrievalResult)
 
 
@@ -536,19 +539,27 @@ def test_rrf_output_ordered_by_score_descending() -> None:
 @pytest.mark.tenant_isolation
 @pytest.mark.asyncio
 async def test_search_hybrid_always_includes_tenant_filter() -> None:
-    """Both Qdrant calls in search_hybrid include the mandatory tenant_id filter."""
+    """Primary hybrid path: the single Qdrant call's Prefetch branches carry tenant_id filters."""
+    from qdrant_client.models import Prefetch
+
     service, client = make_service()
     client.query_points.return_value = make_query_response([])
 
     ctx = make_ctx()
     await service.search_hybrid(ctx, "emb_bge_m3", [0.1, 0.2], query_text="test query", top_k=2)
 
-    assert client.query_points.call_count == 2
-    for call in client.query_points.call_args_list:
-        flt: Filter = call.kwargs["query_filter"]
+    # Primary path: exactly ONE query_points call with prefetch.
+    assert client.query_points.call_count == 1
+    call_kwargs = client.query_points.call_args.kwargs
+    prefetch_list: list[Prefetch] = call_kwargs.get("prefetch", [])
+    assert len(prefetch_list) == 2, "Expected dense + sparse prefetch branches"
+
+    for prefetch in prefetch_list:
+        flt: Filter = prefetch.filter
+        assert flt is not None, "Prefetch branch missing filter — tenant isolation violation"
         must = flt.must or []
         keys = [c.key for c in must if hasattr(c, "key")]
-        assert "tenant_id" in keys, "tenant_id missing from a search_hybrid Qdrant call"
+        assert "tenant_id" in keys, f"tenant_id missing from prefetch filter keys: {keys}"
 
 
 @pytest.mark.tenant_isolation
@@ -566,15 +577,20 @@ async def test_search_hybrid_empty_collections_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_search_hybrid_returns_at_most_top_k() -> None:
-    """search_hybrid returns no more than top_k results after RRF fusion."""
+    """search_hybrid returns no more than top_k results.
+
+    In the primary (Qdrant-native RRF) path the limit is enforced server-side.
+    The mock is configured to return only top_k hits to simulate Qdrant honouring the limit.
+    """
     service, client = make_service()
-    # Return 10 hits from both calls (corpus = 5 * top_k = 10, dense = top_k = 2)
-    hits = [make_qdrant_hit(score=0.9 - i * 0.05) for i in range(10)]
+    top_k = 2
+    # Simulate Qdrant honouring the limit parameter — return exactly top_k results.
+    hits = [make_qdrant_hit(score=0.9 - i * 0.05) for i in range(top_k)]
     client.query_points.return_value = make_query_response(hits)
 
     ctx = make_ctx()
     results = await service.search_hybrid(
-        ctx, "emb_bge_m3", [0.1], query_text="some query", top_k=2
+        ctx, "emb_bge_m3", [0.1], query_text="some query", top_k=top_k
     )
 
-    assert len(results) <= 2
+    assert len(results) <= top_k
