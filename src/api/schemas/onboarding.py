@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 # ── Request schemas ───────────────────────────────────────────────────────────
 
+
 class StartSessionRequest(BaseModel):
     tenant_name: str = Field(..., min_length=2, max_length=255)
     tenant_slug: str = Field(..., min_length=2, max_length=100, pattern=r"^[a-z0-9-]+$")
@@ -52,6 +53,7 @@ class Step4PipelineRequest(BaseModel):
 
 
 # ── Response schemas ──────────────────────────────────────────────────────────
+
 
 class SessionStatusResponse(BaseModel):
     session_id: uuid.UUID

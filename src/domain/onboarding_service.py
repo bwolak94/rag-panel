@@ -158,8 +158,10 @@ class OnboardingService:
             obj, step=1, extra_config={"display_name": body.display_name}
         )
         return StepResultResponse(
-            session_id=session_id, step_completed=1, next_step=2,
-            message="Tenant configuration saved."
+            session_id=session_id,
+            step_completed=1,
+            next_step=2,
+            message="Tenant configuration saved.",
         )
 
     async def execute_step_2(
@@ -197,24 +199,28 @@ class OnboardingService:
                     "primary_language": col_cfg.primary_language,
                 }
             else:
-                self._session.add(Collection(
-                    tenant_id=tenant_id,
-                    name=col_cfg.name,
-                    description=col_cfg.description,
-                    embedding_model_id=model.id,
-                    chunk_config={
-                        "strategy": col_cfg.chunk_strategy,
-                        "chunk_size": col_cfg.chunk_size,
-                        "overlap": col_cfg.chunk_overlap,
-                        "primary_language": col_cfg.primary_language,
-                    },
-                ))
+                self._session.add(
+                    Collection(
+                        tenant_id=tenant_id,
+                        name=col_cfg.name,
+                        description=col_cfg.description,
+                        embedding_model_id=model.id,
+                        chunk_config={
+                            "strategy": col_cfg.chunk_strategy,
+                            "chunk_size": col_cfg.chunk_size,
+                            "overlap": col_cfg.chunk_overlap,
+                            "primary_language": col_cfg.primary_language,
+                        },
+                    )
+                )
             created_names.append(col_cfg.name)
 
         await self._mark_step_complete(obj, step=2, extra_config={"collections": created_names})
         return StepResultResponse(
-            session_id=session_id, step_completed=2, next_step=3,
-            message=f"{len(created_names)} collection(s) configured."
+            session_id=session_id,
+            step_completed=2,
+            next_step=3,
+            message=f"{len(created_names)} collection(s) configured.",
         )
 
     async def execute_step_3(
@@ -248,8 +254,7 @@ class OnboardingService:
         await tenant_repo.assign_role(tenant_id, user.id, body.role)
         await self._mark_step_complete(obj, step=3, extra_config={"admin_user_id": str(user.id)})
         return StepResultResponse(
-            session_id=session_id, step_completed=3, next_step=4,
-            message="Admin user assigned."
+            session_id=session_id, step_completed=3, next_step=4, message="Admin user assigned."
         )
 
     async def execute_step_4(
@@ -275,12 +280,14 @@ class OnboardingService:
             "guardrails_enabled": body.guardrails_enabled,
         }
         if pipeline is None:
-            self._session.add(Pipeline(
-                tenant_id=tenant_id,
-                name=body.pipeline_name,
-                config=pipeline_config,
-                is_active=True,
-            ))
+            self._session.add(
+                Pipeline(
+                    tenant_id=tenant_id,
+                    name=body.pipeline_name,
+                    config=pipeline_config,
+                    is_active=True,
+                )
+            )
         else:
             pipeline.config = pipeline_config
 
@@ -288,8 +295,7 @@ class OnboardingService:
             obj, step=4, extra_config={"pipeline_name": body.pipeline_name}
         )
         return StepResultResponse(
-            session_id=session_id, step_completed=4, next_step=5,
-            message="Pipeline configured."
+            session_id=session_id, step_completed=4, next_step=5, message="Pipeline configured."
         )
 
     async def activate(self, session_id: uuid.UUID) -> ActivationResultResponse:
@@ -298,9 +304,7 @@ class OnboardingService:
         required = {"1", "2", "3", "4"}
         missing = required - set(str(k) for k, v in obj.steps_completed.items() if v)
         if missing:
-            raise DomainValidationError(
-                f"Cannot activate: steps {sorted(missing)} not completed"
-            )
+            raise DomainValidationError(f"Cannot activate: steps {sorted(missing)} not completed")
 
         from src.db.models.collection import Collection
         from src.db.models.pipeline import Pipeline
@@ -312,14 +316,16 @@ class OnboardingService:
 
         # Count created resources for response
         col_count = (
-            await self._session.execute(
-                select(Collection).where(Collection.tenant_id == obj.tenant_id)
+            (
+                await self._session.execute(
+                    select(Collection).where(Collection.tenant_id == obj.tenant_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         pipeline_exists = (
-            await self._session.execute(
-                select(Pipeline).where(Pipeline.tenant_id == obj.tenant_id)
-            )
+            await self._session.execute(select(Pipeline).where(Pipeline.tenant_id == obj.tenant_id))
         ).scalar_one_or_none() is not None
 
         now = _utcnow()

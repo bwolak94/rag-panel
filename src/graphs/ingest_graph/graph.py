@@ -239,9 +239,11 @@ async def run_ingest_graph(
     )
     await session.flush()
 
-    graph_rag_enabled, vision_extraction_enabled, semantic_dedup_enabled = (
-        await _resolve_pipeline_flags(session, event.collection_id)
-    )
+    (
+        graph_rag_enabled,
+        vision_extraction_enabled,
+        semantic_dedup_enabled,
+    ) = await _resolve_pipeline_flags(session, event.collection_id)
     graph = build_ingest_graph(
         graph_rag_enabled=graph_rag_enabled,
         vision_extraction_enabled=vision_extraction_enabled,

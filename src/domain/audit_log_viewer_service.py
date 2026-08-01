@@ -133,9 +133,15 @@ class AuditLogViewerService:
         writer = csv.DictWriter(
             output,
             fieldnames=[
-                "id", "user_id", "user_display_name", "action",
-                "resource_type", "resource_id", "details_summary",
-                "ip_address", "created_at",
+                "id",
+                "user_id",
+                "user_display_name",
+                "action",
+                "resource_type",
+                "resource_id",
+                "details_summary",
+                "ip_address",
+                "created_at",
             ],
             extrasaction="ignore",
         )
@@ -143,17 +149,19 @@ class AuditLogViewerService:
         for row in items_raw:
             details: dict[str, Any] = row.get("details") or {}
             details_summary = "; ".join(f"{k}={v}" for k, v in details.items())[:200]
-            writer.writerow({
-                "id": row.get("id"),
-                "user_id": row.get("user_id"),
-                "user_display_name": row.get("user_display_name"),
-                "action": row.get("action"),
-                "resource_type": row.get("resource_type"),
-                "resource_id": row.get("resource_id"),
-                "details_summary": details_summary,
-                "ip_address": row.get("ip_address"),
-                "created_at": row.get("created_at"),
-            })
+            writer.writerow(
+                {
+                    "id": row.get("id"),
+                    "user_id": row.get("user_id"),
+                    "user_display_name": row.get("user_display_name"),
+                    "action": row.get("action"),
+                    "resource_type": row.get("resource_type"),
+                    "resource_id": row.get("resource_id"),
+                    "details_summary": details_summary,
+                    "ip_address": row.get("ip_address"),
+                    "created_at": row.get("created_at"),
+                }
+            )
 
         return output.getvalue()
 

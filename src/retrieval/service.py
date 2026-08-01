@@ -465,9 +465,7 @@ class RetrievalService:
         from qdrant_client.models import Filter as QdrantFilter
         from qdrant_client.models import Fusion, FusionQuery, Prefetch
 
-        flt: QdrantFilter | None = (
-            query_filter if isinstance(query_filter, QdrantFilter) else None
-        )
+        flt: QdrantFilter | None = query_filter if isinstance(query_filter, QdrantFilter) else None
 
         for attempt in range(2):
             try:

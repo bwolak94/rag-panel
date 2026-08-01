@@ -207,8 +207,7 @@ async def main() -> None:
     parser.add_argument(
         "--collection",
         metavar="NAME",
-        help="Migrate only the named collection (e.g. emb_bge_m3). "
-        "Default: all emb_* collections.",
+        help="Migrate only the named collection (e.g. emb_bge_m3). Default: all emb_* collections.",
     )
     args = parser.parse_args()
 
