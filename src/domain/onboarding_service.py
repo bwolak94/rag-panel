@@ -149,9 +149,10 @@ class OnboardingService:
             )
         else:
             # Idempotent update
-            tenant = await tenant_repo.get_by_id(obj.tenant_id)
-            if tenant is None:
+            _tenant = await tenant_repo.get_by_id(obj.tenant_id)
+            if _tenant is None:
                 raise NotFoundError("Tenant not found")
+            tenant = _tenant
             await tenant_repo.update(tenant, name=body.display_name, settings=body.settings)
 
         await self._mark_step_complete(
@@ -247,6 +248,8 @@ class OnboardingService:
             await self._session.flush()
 
         tenant_id = obj.tenant_id
+        if tenant_id is None:
+            raise DomainValidationError("Step 1 (tenant configuration) must be completed first")
         # Add user to tenant (idempotent — ConflictError swallowed)
         with contextlib.suppress(ConflictError):
             await tenant_repo.add_user(tenant_id, user.id)
@@ -265,35 +268,15 @@ class OnboardingService:
         if not obj.steps_completed.get("3"):
             raise DomainValidationError("Step 3 (admin user) must be completed first")
 
-        from src.db.models.pipeline import Pipeline
-
-        tenant_id = obj.tenant_id
-        pipeline_q = select(Pipeline).where(
-            Pipeline.tenant_id == tenant_id,
-            Pipeline.name == body.pipeline_name,
-        )
-        pipeline = (await self._session.execute(pipeline_q)).scalar_one_or_none()
         pipeline_config = {
+            "pipeline_name": body.pipeline_name,
             "top_k": body.top_k,
             "score_threshold": body.score_threshold,
             "cache_responses": body.cache_responses,
             "guardrails_enabled": body.guardrails_enabled,
         }
-        if pipeline is None:
-            self._session.add(
-                Pipeline(
-                    tenant_id=tenant_id,
-                    name=body.pipeline_name,
-                    config=pipeline_config,
-                    is_active=True,
-                )
-            )
-        else:
-            pipeline.config = pipeline_config
 
-        await self._mark_step_complete(
-            obj, step=4, extra_config={"pipeline_name": body.pipeline_name}
-        )
+        await self._mark_step_complete(obj, step=4, extra_config=pipeline_config)
         return StepResultResponse(
             session_id=session_id, step_completed=4, next_step=5, message="Pipeline configured."
         )
@@ -307,7 +290,6 @@ class OnboardingService:
             raise DomainValidationError(f"Cannot activate: steps {sorted(missing)} not completed")
 
         from src.db.models.collection import Collection
-        from src.db.models.pipeline import Pipeline
         from src.db.models.tenant import Tenant
 
         tenant = await self._session.get(Tenant, obj.tenant_id)
@@ -324,9 +306,7 @@ class OnboardingService:
             .scalars()
             .all()
         )
-        pipeline_exists = (
-            await self._session.execute(select(Pipeline).where(Pipeline.tenant_id == obj.tenant_id))
-        ).scalar_one_or_none() is not None
+        pipeline_exists = bool(obj.draft_config.get("pipeline_name"))
 
         now = _utcnow()
         await self._session.execute(

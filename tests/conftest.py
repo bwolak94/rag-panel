@@ -39,6 +39,14 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def reset_rag_cache() -> None:
+    """Reset the RAGCache singleton between tests to prevent cache pollution."""
+    import src.core.cache as cache_module
+
+    cache_module._rag_cache = None
+
+
 @pytest.fixture
 def override_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """Pre-set all required env vars so Settings() can instantiate in tests."""
