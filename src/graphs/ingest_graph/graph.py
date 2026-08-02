@@ -45,6 +45,7 @@ from src.graphs.ingest_graph import nodes
 from src.graphs.ingest_graph.routing import (
     route_after_dedupe,
     route_after_pii,
+    route_after_semantic_dedup,
     route_after_validate,
 )
 from src.graphs.ingest_graph.state import IngestState
@@ -76,6 +77,7 @@ def build_ingest_graph(
     checkpointer: Any = None,
     graph_rag_enabled: bool = False,
     vision_extraction_enabled: bool = False,
+    semantic_dedup_enabled: bool = False,
 ) -> Any:
     """Compile and return the ingest StateGraph.
 
@@ -93,6 +95,11 @@ def build_ingest_graph(
                                    Controlled by
                                    collection.chunk_config["vision_extraction_enabled"].
                                    Defaults to False (standard pipeline).
+        semantic_dedup_enabled: When True, inserts node_semantic_dedup between node_embed
+                                and node_upsert. Detects near-duplicate documents via
+                                cosine similarity on mean-pooled chunk embeddings.
+                                Controlled by collection.chunk_config["semantic_dedup_enabled"].
+                                Defaults to False (standard pipeline).
 
     Returns:
         Compiled LangGraph CompiledStateGraph.
@@ -162,7 +169,20 @@ def build_ingest_graph(
         # Standard topology: node_chunk → node_embed
         builder.add_edge("node_chunk", "node_embed")
 
-    builder.add_edge("node_embed", "node_upsert")
+    # Semantic dedup runs after embed (needs embeddings) and before upsert.
+    if semantic_dedup_enabled:
+        builder.add_node(  # type: ignore[call-overload]
+            "node_semantic_dedup", nodes.node_semantic_dedup
+        )
+        builder.add_edge("node_embed", "node_semantic_dedup")
+        builder.add_conditional_edges(
+            "node_semantic_dedup",
+            route_after_semantic_dedup,
+            {"node_upsert": "node_upsert", END: END},
+        )
+    else:
+        builder.add_edge("node_embed", "node_upsert")
+
     builder.add_edge("node_upsert", "node_persist")
     builder.add_edge("node_persist", END)
 
@@ -172,11 +192,11 @@ def build_ingest_graph(
 async def _resolve_pipeline_flags(
     session: AsyncSession,
     collection_id: uuid.UUID,
-) -> tuple[bool, bool]:
-    """Read graph_rag_enabled and vision_extraction_enabled from collection.chunk_config.
+) -> tuple[bool, bool, bool]:
+    """Read opt-in feature flags from collection.chunk_config.
 
-    Returns (graph_rag_enabled, vision_extraction_enabled).
-    Both default to False when the collection is not found or the flag is absent/falsy.
+    Returns (graph_rag_enabled, vision_extraction_enabled, semantic_dedup_enabled).
+    All default to False when the collection is not found or the flag is absent/falsy.
     """
     from sqlalchemy import select
 
@@ -185,11 +205,12 @@ async def _resolve_pipeline_flags(
     result = await session.execute(select(Collection).where(Collection.id == collection_id))
     collection = result.scalar_one_or_none()
     if collection is None:
-        return False, False
+        return False, False, False
     chunk_config: dict[str, Any] = collection.chunk_config or {}
     return (
         bool(chunk_config.get("graph_rag_enabled", False)),
         bool(chunk_config.get("vision_extraction_enabled", False)),
+        bool(chunk_config.get("semantic_dedup_enabled", False)),
     )
 
 
@@ -218,12 +239,13 @@ async def run_ingest_graph(
     )
     await session.flush()
 
-    graph_rag_enabled, vision_extraction_enabled = await _resolve_pipeline_flags(
-        session, event.collection_id
+    graph_rag_enabled, vision_extraction_enabled, semantic_dedup_enabled = (
+        await _resolve_pipeline_flags(session, event.collection_id)
     )
     graph = build_ingest_graph(
         graph_rag_enabled=graph_rag_enabled,
         vision_extraction_enabled=vision_extraction_enabled,
+        semantic_dedup_enabled=semantic_dedup_enabled,
     )
 
     initial_state = IngestState(

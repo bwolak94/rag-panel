@@ -7,6 +7,8 @@ Any import of qdrant_client outside src/retrieval/ fails CI.
 from __future__ import annotations
 
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from uuid import UUID
 
@@ -18,9 +20,13 @@ from qdrant_client.models import (
     FilterSelector,
     PayloadSchemaType,
     PointStruct,
+    SparseVectorParams,
     VectorParams,
 )
-from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
+from qdrant_client.models import (
+    SparseVector as QdrantSparseVector,
+)
+from rank_bm25 import BM25Okapi
 from tenacity import (
     retry,
     retry_if_not_exception_type,
@@ -46,6 +52,50 @@ logger = structlog.get_logger(__name__)
 # BM25 corpus fetch multiplier — fetch this many more candidates than top_k so
 # BM25 has a meaningful corpus to rank over. Value of 5 balances recall vs. latency.
 _BM25_CORPUS_MULTIPLIER = 5
+
+# Thread pool for fastembed sparse encoding (CPU-bound, not async-friendly).
+_SPARSE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="fastembed")
+
+# Module-level fastembed sparse encoder singleton — lazily initialised on first use.
+# Double-checked locking pattern guards against a race when two threads from
+# _SPARSE_EXECUTOR both observe _sparse_model is None simultaneously.
+_sparse_model: Any | None = None
+_sparse_model_lock = threading.Lock()
+
+
+def _get_sparse_encoder() -> Any:
+    """Return the fastembed SparseTextEmbedding singleton, initialising it if needed.
+
+    Thread-safe: uses double-checked locking so initialisation happens exactly once
+    even when called concurrently from multiple _SPARSE_EXECUTOR threads.
+    The fastembed import is intentionally lazy to avoid a startup penalty when the
+    library is absent (e.g., in environments that only use dense retrieval).
+    """
+    global _sparse_model  # noqa: PLW0603
+    if _sparse_model is None:
+        with _sparse_model_lock:
+            if _sparse_model is None:
+                from fastembed import SparseTextEmbedding
+
+                _sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+    return _sparse_model
+
+
+def _encode_sparse_sync(text: str) -> QdrantSparseVector:
+    """Encode *text* to a Qdrant SparseVector using the fastembed BM25 model.
+
+    This is a synchronous function — call it from a ThreadPoolExecutor to avoid
+    blocking the event loop.
+
+    Args:
+        text: The text to encode (chunk content or query string).
+
+    Returns:
+        QdrantSparseVector with indices and values arrays.
+    """
+    encoder = _get_sparse_encoder()
+    result = list(encoder.embed([text]))[0]
+    return QdrantSparseVector(indices=list(result.indices), values=list(result.values))
 
 
 def _resolve_threshold(
@@ -194,6 +244,18 @@ class RetrievalService:
     # be referenced in tests and by the retrieve node without hard-coding 0.0.
     DEFAULT_SCORE_THRESHOLD: float = 0.0
 
+    async def _encode_sparse(self, text: str) -> QdrantSparseVector:
+        """Encode *text* to a sparse vector using fastembed BM25 in a thread pool.
+
+        Args:
+            text: Query or chunk text to encode.
+
+        Returns:
+            QdrantSparseVector with BM25 term frequencies.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_SPARSE_EXECUTOR, _encode_sparse_sync, text)
+
     async def search(
         self,
         ctx: TenantContext,
@@ -300,23 +362,24 @@ class RetrievalService:
         score_threshold: float = 0.0,
         additional_filter: object | None = None,
     ) -> list[RetrievalResult]:
-        """Hybrid BM25 + dense vector search fused with Reciprocal Rank Fusion.
+        """Hybrid search using Qdrant-native sparse + dense prefetch with RRF fusion.
 
-        Strategy:
-        1. Run dense search for top_k results (the final ranked set).
-        2. Fetch a larger candidate corpus (top_k * BM25_CORPUS_MULTIPLIER) via
-           a second dense query — this gives BM25 a corpus to rank over without
-           requiring a full collection scan.
-        3. Run BM25Okapi over the corpus texts synchronously (fast, CPU-bound).
-        4. Apply RRF to merge the two ranked lists and return top_k results.
+        Strategy (primary path — requires collection with sparse vector config):
+        1. Encode ``query_text`` to a sparse BM25 vector via fastembed in a thread pool.
+        2. Issue a single Qdrant ``query_points`` call with two Prefetch branches:
+           one dense, one sparse. Qdrant performs RRF server-side.
+        3. Return the fused top_k results.
 
-        Both Qdrant calls are issued in parallel via asyncio.gather.
+        Fallback path (for collections without sparse vector config):
+        If Qdrant rejects the prefetch query (e.g. collection was indexed before the
+        sparse vector config was added), the method falls back to the legacy in-memory
+        BM25 approach via ``_search_hybrid_bm25_fallback()``.
 
         Args:
             ctx: Tenant context from verified JWT.
             qdrant_collection: Physical Qdrant collection name.
             query_vector: Embedding vector for the rewritten query.
-            query_text: Original user query text for BM25 tokenization.
+            query_text: Original user query text for sparse BM25 encoding.
             top_k: Number of final results to return. Default 8.
             score_threshold: Applied to the dense retrieval pass only.
             additional_filter: Optional Qdrant Filter merged with mandatory filter.
@@ -340,24 +403,144 @@ class RetrievalService:
             additional_filter if isinstance(additional_filter, QdrantFilter) else None,
         )
 
-        corpus_k = top_k * _BM25_CORPUS_MULTIPLIER
-
         logger.debug(
             "retrieval.search_hybrid",
             tenant_id=str(ctx.tenant_id),
             collection_count=len(ctx.allowed_collection_ids),
             public_collection_count=len(ctx.public_collection_ids),
             top_k=top_k,
-            corpus_k=corpus_k,
             score_threshold=score_threshold,
         )
 
         try:
+            sparse_vector = await self._encode_sparse(query_text)
+        except Exception as exc:
+            logger.warning(
+                "search_hybrid.sparse_encode_failed_fallback",
+                error=str(exc),
+            )
+            return await self._search_hybrid_bm25_fallback(
+                ctx, qdrant_collection, query_vector, query_text, top_k, score_threshold, combined
+            )
+
+        try:
+            results = await self._query_hybrid_qdrant(
+                qdrant_collection, query_vector, sparse_vector, combined, top_k
+            )
+        except EmptyCollectionListError:
+            raise
+        except Exception as exc:
+            # Fall back to in-memory BM25 hybrid if Qdrant rejects the sparse query
+            # (e.g. old collection without sparse_vectors_config).
+            logger.warning(
+                "search_hybrid.sparse_unavailable_fallback",
+                error=str(exc),
+            )
+            return await self._search_hybrid_bm25_fallback(
+                ctx, qdrant_collection, query_vector, query_text, top_k, score_threshold, combined
+            )
+
+        return results
+
+    async def _query_hybrid_qdrant(
+        self,
+        collection_name: str,
+        query_vector: list[float],
+        sparse_vector: QdrantSparseVector,
+        query_filter: object,
+        limit: int,
+    ) -> list[RetrievalResult]:
+        """Execute a Qdrant-native hybrid query using Prefetch + RRF fusion.
+
+        Args:
+            collection_name: Physical Qdrant collection name.
+            query_vector: Dense embedding vector.
+            sparse_vector: Sparse BM25 vector from fastembed.
+            query_filter: Combined Qdrant Filter (tenant + collection isolation).
+            limit: Maximum results.
+
+        Returns:
+            RetrievalResult list ordered by server-side RRF score.
+        """
+        from qdrant_client.models import Filter as QdrantFilter
+        from qdrant_client.models import Fusion, FusionQuery, Prefetch
+
+        flt: QdrantFilter | None = (
+            query_filter if isinstance(query_filter, QdrantFilter) else None
+        )
+
+        for attempt in range(2):
+            try:
+                response = await self._client.query_points(
+                    collection_name=collection_name,
+                    prefetch=[
+                        Prefetch(
+                            query=query_vector,
+                            using="dense",
+                            filter=flt,
+                            limit=limit * 2,
+                        ),
+                        Prefetch(
+                            query=QdrantSparseVector(
+                                indices=sparse_vector.indices,
+                                values=sparse_vector.values,
+                            ),
+                            using="sparse",
+                            filter=flt,
+                            limit=limit * 2,
+                        ),
+                    ],
+                    query=FusionQuery(fusion=Fusion.RRF),
+                    limit=limit,
+                    with_payload=True,
+                )
+                return _scored_points_to_results(list(response.points))
+            except (ValueError, TypeError, AttributeError, KeyError):
+                raise  # non-transient errors — no retry
+            except Exception:
+                if attempt == 1:
+                    raise
+                await asyncio.sleep(1.0)
+        raise RuntimeError("unreachable")
+
+    async def _search_hybrid_bm25_fallback(
+        self,
+        ctx: TenantContext,
+        qdrant_collection: str,
+        query_vector: list[float],
+        query_text: str,
+        top_k: int,
+        score_threshold: float,
+        combined_filter: object,
+    ) -> list[RetrievalResult]:
+        """Legacy in-memory BM25 hybrid fallback for collections without sparse config.
+
+        Issues two dense Qdrant queries (top_k + corpus), runs BM25 in-memory,
+        then merges with RRF. Kept for backward compatibility with collections indexed
+        before sparse vector support was added.
+
+        Args:
+            ctx: Tenant context (used only for logging counts).
+            qdrant_collection: Physical Qdrant collection name.
+            query_vector: Embedding vector.
+            query_text: Query text for BM25 tokenization.
+            top_k: Number of final results.
+            score_threshold: Minimum dense similarity score.
+            combined_filter: Pre-built Qdrant filter (tenant + collection).
+
+        Returns:
+            RetrievalResult list ordered by RRF score descending, length <= top_k.
+        """
+        corpus_k = top_k * _BM25_CORPUS_MULTIPLIER
+
+        try:
             dense_hits, corpus_hits = await asyncio.gather(
                 self._search_with_retry(
-                    qdrant_collection, query_vector, combined, top_k, score_threshold
+                    qdrant_collection, query_vector, combined_filter, top_k, score_threshold
                 ),
-                self._search_with_retry(qdrant_collection, query_vector, combined, corpus_k, 0.0),
+                self._search_with_retry(
+                    qdrant_collection, query_vector, combined_filter, corpus_k, 0.0
+                ),
             )
         except EmptyCollectionListError:
             raise
@@ -367,10 +550,10 @@ class RetrievalService:
         dense_results = _scored_points_to_results(dense_hits)
         corpus_results = _scored_points_to_results(corpus_hits)
 
-        # BM25 is synchronous and fast enough not to need an executor for top-k corpora.
-        bm25_results = _run_bm25(query_text, corpus_results)
+        from src.core.config import settings
 
-        fused = reciprocal_rank_fusion(dense_results, bm25_results)
+        bm25_results = _run_bm25(query_text, corpus_results)
+        fused = reciprocal_rank_fusion(dense_results, bm25_results, k=settings.RETRIEVAL_RRF_K)
         return fused[:top_k]
 
     @retry(
@@ -409,6 +592,11 @@ class RetrievalService:
     ) -> None:
         """Upsert a batch of points. Validates tenant_id in each payload before sending.
 
+        When a point has a ``sparse_vector``, it is upserted using the named-vector format
+        (``{"dense": [...], "sparse": SparseVector(...)}``) so that Qdrant-native hybrid
+        search can use both vector types. Points without a sparse_vector fall back to a
+        plain flat vector for backward compatibility with older collections.
+
         Public collection write guard: if a point targets a public collection
         (collection_id in ctx.public_collection_ids) and the caller is NOT the
         owning tenant (collection_id NOT in ctx.allowed_collection_ids), a
@@ -436,9 +624,15 @@ class RetrievalService:
             _assert_write_allowed_for_public(ctx, collection_uuid)
             _validate_point_payload(ctx, point)
 
-        qdrant_points = [
-            PointStruct(id=str(p.id), vector=p.vector, payload=p.payload) for p in points
-        ]
+        qdrant_points: list[PointStruct] = []
+        for p in points:
+            if p.sparse_vector is not None:
+                # Named-vector format: enables Qdrant-native sparse + dense hybrid search.
+                vectors: Any = {"dense": p.vector, "sparse": p.sparse_vector}
+            else:
+                # Flat vector format: backward-compatible with collections without sparse config.
+                vectors = p.vector
+            qdrant_points.append(PointStruct(id=str(p.id), vector=vectors, payload=p.payload))
 
         logger.debug(
             "retrieval.upsert_batch",
@@ -575,8 +769,12 @@ class RetrievalService:
     ) -> None:
         """Create Qdrant collection emb_{embedding_model_slug} if it does not exist.
 
-        Also creates payload indexes for tenant_id, collection_id, and document_id on first
-        creation. Idempotent — safe to call on every collection create.
+        The collection is created with named vector config:
+          - "dense": standard dense vector of ``vector_size`` dimensions.
+          - "sparse": sparse vector using SparseVectorParams (for fastembed BM25).
+
+        Also creates payload indexes for tenant_id, collection_id, and document_id on
+        first creation. Idempotent — safe to call on every collection create.
 
         Args:
             embedding_model_slug: Slug for the embedding model (e.g., "bge_m3").
@@ -593,7 +791,8 @@ class RetrievalService:
 
         await self._client.create_collection(
             collection_name=collection_name,
-            vectors_config=VectorParams(size=vector_size, distance=distance_enum),
+            vectors_config={"dense": VectorParams(size=vector_size, distance=distance_enum)},
+            sparse_vectors_config={"sparse": SparseVectorParams()},
         )
         # Create payload indexes for mandatory filter fields
         await self._client.create_payload_index(

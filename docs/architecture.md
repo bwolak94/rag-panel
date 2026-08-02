@@ -2353,3 +2353,59 @@ Trap questions are queries that should be answered with "not found in documents"
 - GPU/LLM availability in CI is a prerequisite. If CI runs on CPU-only nodes, the eval job is skipped (acceptable for MVP; dedicated CI GPU is a Phase 3 investment).
 
 **Agents:** `rag-engineer` (eval dataset creation, RAGAS integration), `ml-engineer` (metric selection, baseline generation), `backend-dev` (CI pipeline configuration), `security-auditor` (verify eval data contains no real PII).
+
+---
+
+## ADR-019: Hybrid Retrieval — Qdrant-Native Sparse + Dense with RRF
+
+**Date:** 2026-08-01
+**Status:** Implemented
+**Deciders:** rag-engineer, ml-engineer, security-auditor
+
+**Context:**
+
+The original retrieval used dense vector similarity only. For medical terminology — drug names, ICD codes, procedure codes — exact keyword matches matter more than semantic proximity. Dense-only retrieval misses documents that contain the exact term but use different embeddings. This degrades recall for low-frequency, high-specificity medical queries.
+
+**Decision:**
+
+Implement hybrid retrieval: run BM25 (sparse) and dense vector search in parallel, then merge results using **Reciprocal Rank Fusion (RRF)** with k=60.
+
+**Primary architecture:**
+```
+query → [dense encoder]  → dense Qdrant Prefetch  (top_k × 2)
+      → [fastembed BM25] → sparse Qdrant Prefetch (top_k × 2)
+      → Qdrant server-side RRF fusion → top_k results
+```
+
+**Fallback architecture** (for collections without sparse vector config):
+```
+query → [dense encoder] → Qdrant dense search (top_k)
+      → [dense encoder] → Qdrant corpus fetch (top_k × 5)
+      → in-memory BM25Okapi re-ranking
+      → local RRF merge → top_k results
+```
+
+**Key implementation details:**
+
+- **Sparse encoder:** `fastembed>=0.4` with `Qdrant/bm25` model — lightweight, no GPU, lazy-loaded singleton with double-checked thread lock (`threading.Lock`).
+- **Qdrant collection schema:** `vectors_config={"dense": VectorParams(...)}` + `sparse_vectors_config={"sparse": SparseVectorParams()}` for all new collections.
+- **Ingest pipeline:** `node_upsert` computes sparse vectors for every chunk at index time using `_SPARSE_EXECUTOR` (bounded `ThreadPoolExecutor`, max_workers=2); falls back to `sparse_vector=None` if fastembed is unavailable.
+- **Retrieval config:** `collection.search_config` JSONB field, key `"search_mode": "dense"|"hybrid"` (default `"dense"`). No additional DB migration required.
+- **RRF constant:** `settings.RETRIEVAL_RRF_K = 60` (Cormack et al. 2009 default), tuneable via environment variable.
+- **Retry:** `_query_hybrid_qdrant` retries once on transient errors before falling back to BM25.
+- **Re-index script:** `scripts/migrate_collections_hybrid.py` — one-off admin tool to add sparse vectors to existing Qdrant collections; exempt from the no-direct-qdrant-client rule.
+
+**Tenant isolation:** Both Prefetch branches (dense and sparse) carry the same `combined_filter` derived from `build_read_filter(tenant_id, allowed_collection_ids)`. All 11 `@pytest.mark.tenant_isolation` tests pass. Security audit: no blockers.
+
+**Alternatives considered:**
+- **In-memory BM25 only (rank_bm25):** Kept as fallback. Simpler, no fastembed dependency, but less accurate for long documents (candidates limited to N×5 dense results).
+- **Qdrant SPLADE (neural sparse):** Higher quality than BM25 sparse but requires GPU at index time and 500MB+ model download. Deferred to Phase 4.
+- **Cross-encoder reranking:** Planned for Phase 3 (placeholder `rerank()` no-op in `src/retrieval/reranker.py`).
+
+**Consequences:**
+- New dependency: `fastembed>=0.4` in runtime dependencies.
+- `QdrantPoint.sparse_vector` field (optional, default None) — backward-compatible.
+- New collections include sparse vector schema; existing collections need `scripts/migrate_collections_hybrid.py` run once after deploy.
+- `node_upsert` adds ~10-50ms per ingest batch for sparse encoding (CPU-bound, pooled).
+
+**Agents:** `rag-engineer` (implementation), `python-reviewer` (code review — no blockers), `security-auditor` (tenant isolation audit — no blockers).

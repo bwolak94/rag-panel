@@ -24,6 +24,8 @@ from src.api.routers import (
     tenants,
     tos,
 )
+from src.api.routers.admin_audit_log import router as admin_audit_log_router
+from src.api.routers.platform_onboarding import router as platform_onboarding_router
 from src.api.routers.webhooks import webhook_router
 from src.core.config import settings
 from src.core.langfuse_client import initialize_langfuse, shutdown_langfuse
@@ -103,6 +105,8 @@ def create_app() -> FastAPI:
     app.include_router(webhook_router)  # /internal/minio-webhook
     app.include_router(tos.router, prefix="/api/v1")  # /api/v1/terms, /api/v1/tenants/.../terms/*
     app.include_router(admin_review.router)  # /api/v1/admin/...
+    app.include_router(admin_audit_log_router)  # /api/v1/admin/audit-log
+    app.include_router(platform_onboarding_router)  # /api/v1/platform/onboarding
 
     # ToS check middleware — uses the shared Redis singleton (same pool as routers)
     from src.core.clients.redis_client import get_redis_client

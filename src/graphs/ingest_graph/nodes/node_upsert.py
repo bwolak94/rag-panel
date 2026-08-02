@@ -8,6 +8,7 @@ Each point payload contains tenant_id for mandatory tenant-scoped filtering in r
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -83,11 +84,34 @@ async def node_upsert(state: IngestState, config: dict[str, Any]) -> dict[str, A
         points: list[QdrantPoint] = []
         now_ts = int(utcnow().timestamp())
 
-        for chunk, vector in zip(chunks, embeddings, strict=True):
+        # Compute sparse vectors for all chunks in parallel using fastembed BM25.
+        # Falls back gracefully to None if fastembed is unavailable or encoding fails.
+        sparse_vectors: list[object | None]
+        try:
+            from src.retrieval.service import _SPARSE_EXECUTOR, _encode_sparse_sync
+
+            loop = asyncio.get_running_loop()
+            sparse_vectors = list(
+                await asyncio.gather(
+                    *[
+                        loop.run_in_executor(_SPARSE_EXECUTOR, _encode_sparse_sync, chunk.text)
+                        for chunk in chunks
+                    ]
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "node_upsert.sparse_encode_failed",
+                error_type=type(exc).__name__,
+            )
+            sparse_vectors = [None] * len(chunks)
+
+        for i, (chunk, vector) in enumerate(zip(chunks, embeddings, strict=True)):
             points.append(
                 QdrantPoint(
                     id=chunk.point_id,
                     vector=vector,
+                    sparse_vector=sparse_vectors[i],
                     payload={
                         "tenant_id": str(state.tenant_id),
                         "collection_id": str(state.collection_id),

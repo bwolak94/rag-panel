@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     # RAG
     RETRIEVAL_TOP_K: int = 8
     RETRIEVAL_RELEVANCE_THRESHOLD: float = 0.5
+    RETRIEVAL_RRF_K: int = 60  # RRF smoothing constant (Cormack et al. 2009)
     NOT_FOUND_MESSAGE: str = "I could not find an answer in the available documents."
     DEFAULT_CONTEXT_TOKEN_BUDGET: int = 6000
 
