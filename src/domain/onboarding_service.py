@@ -21,7 +21,10 @@ import structlog
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.onboarding import (
+from src.core.exceptions import ConflictError, DomainValidationError, NotFoundError
+from src.db.models.onboarding_session import OnboardingSession
+from src.db.repositories.tenant_repository import TenantRepository
+from src.domain.schemas.onboarding import (
     ActivationResultResponse,
     SessionStatusResponse,
     Step1TenantConfigRequest,
@@ -30,9 +33,6 @@ from src.api.schemas.onboarding import (
     Step4PipelineRequest,
     StepResultResponse,
 )
-from src.core.exceptions import ConflictError, DomainValidationError, NotFoundError
-from src.db.models.onboarding_session import OnboardingSession
-from src.db.repositories.tenant_repository import TenantRepository
 
 logger = structlog.get_logger(__name__)
 

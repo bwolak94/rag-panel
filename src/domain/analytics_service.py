@@ -16,7 +16,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.analytics import (
+from src.domain.schemas.analytics import (
     AnalyticsSummaryResponse,
     CollectionDocumentStats,
     CollectionQueryStats,
