@@ -1,6 +1,6 @@
 # TASK-021: Per-tenant Usage Analytics API
 
-**Status:** TODO
+**Status:** DONE
 **Priority:** P2 — required for billing, quotas, and admin dashboards
 **Owner:** backend-dev
 **Reviewer:** python-reviewer

@@ -3,6 +3,7 @@
 from src.db.models.ab_test_result import ABTestResult
 from src.db.models.audit_log import AuditLog
 from src.db.models.base import Base, TimestampMixin
+from src.db.models.bulk_import_job import BulkImportJob
 from src.db.models.chunks_registry import ChunksRegistry
 from src.db.models.collection import Collection, CollectionAccess
 from src.db.models.conversation import Conversation
@@ -21,11 +22,13 @@ from src.db.models.tos_acceptance import TosAcceptance
 from src.db.models.tos_version import TosVersion
 from src.db.models.user import User
 from src.db.models.user_tenant import UserTenant
+from src.db.models.webhook import Webhook, WebhookDelivery
 
 __all__ = [
     "ABTestResult",
     "AuditLog",
     "Base",
+    "BulkImportJob",
     "ChunksRegistry",
     "Collection",
     "CollectionAccess",
@@ -50,4 +53,6 @@ __all__ = [
     "User",
     "UserRole",
     "UserTenant",
+    "Webhook",
+    "WebhookDelivery",
 ]
