@@ -105,6 +105,14 @@ class Collection(Base, TimestampMixin):
             "NULL = system-owned; no tenant may write directly."
         ),
     )
+    # Multi-language support (TASK-027): ISO 639-3 code of the collection's primary language.
+    # Used by node_translate_query to detect cross-language queries.
+    primary_language: Mapped[str] = mapped_column(
+        String(10),
+        nullable=False,
+        server_default=text("'pol'"),
+        comment="ISO 639-3 primary language of documents in this collection (default: pol).",
+    )
 
 
 class CollectionAccess(Base):

@@ -130,6 +130,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    ports:
+      - "8080:8080"
     networks:
       - internal_net
       - proxy_net
@@ -231,6 +233,7 @@ services:
       WEBUI_SECRET_KEY: dev-secret-change-in-production
       RAG_EMBEDDING_ENGINE: ""          # disable built-in RAG so no model download needed
       ENABLE_RAG_WEB_SEARCH: "false"
+      ENABLE_SIGNUP: "true"
     volumes:
       - openwebui_data:/app/backend/data
     ports:

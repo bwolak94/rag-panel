@@ -34,7 +34,11 @@ from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.db.models.rag_pipeline import RagPipeline
 from src.domain.auth import UserContext
 from src.graphs.query_graph import nodes
-from src.graphs.query_graph.routing import route_after_classify, route_after_grade
+from src.graphs.query_graph.routing import (
+    route_after_classify,
+    route_after_detect_language,
+    route_after_grade,
+)
 from src.graphs.query_graph.state import QueryState
 from src.retrieval.service import RetrievalService
 
@@ -65,6 +69,8 @@ def build_query_graph(
 
     builder.add_node("node_classify_intent", nodes.node_classify_intent)  # type: ignore[call-overload]
     builder.add_node("node_rewrite_query", nodes.node_rewrite_query)  # type: ignore[call-overload]
+    builder.add_node("node_detect_language", nodes.node_detect_language)  # type: ignore[call-overload]
+    builder.add_node("node_translate_query", nodes.node_translate_query)  # type: ignore[call-overload]
     builder.add_node("node_retrieve", nodes.node_retrieve)  # type: ignore[call-overload]
     builder.add_node("node_rerank", nodes.node_rerank)  # type: ignore[call-overload]
     builder.add_node("node_grade_documents", nodes.node_grade_documents)  # type: ignore[call-overload]
@@ -82,18 +88,28 @@ def build_query_graph(
         },
     )
 
+    # Language detection always follows rewrite; conditional translation before retrieval.
+    builder.add_edge("node_rewrite_query", "node_detect_language")
+    builder.add_conditional_edges(
+        "node_detect_language",
+        route_after_detect_language,
+        {
+            "node_translate_query": "node_translate_query",
+            "node_retrieve": "node_retrieve",
+        },
+    )
+    builder.add_edge("node_translate_query", "node_retrieve")
+
     if graph_rag_enabled:
-        # Parallel branch: node_rewrite_query fans out to both retrieve nodes;
-        # both edges converge at node_rerank.
+        # Parallel KG branch: node_rewrite_query fans out to node_graph_retrieve;
+        # converges with node_retrieve at node_rerank.
         builder.add_node(  # type: ignore[call-overload]
             "node_graph_retrieve", nodes.node_graph_retrieve
         )
-        builder.add_edge("node_rewrite_query", "node_retrieve")
         builder.add_edge("node_rewrite_query", "node_graph_retrieve")
         builder.add_edge("node_retrieve", "node_rerank")
         builder.add_edge("node_graph_retrieve", "node_rerank")
     else:
-        builder.add_edge("node_rewrite_query", "node_retrieve")
         builder.add_edge("node_retrieve", "node_rerank")
 
     builder.add_edge("node_rerank", "node_grade_documents")

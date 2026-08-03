@@ -1,13 +1,17 @@
 """Unit tests for query graph routing functions.
 
-Tests route_after_classify and route_after_grade.
+Tests route_after_classify, route_after_detect_language, and route_after_grade.
 """
 
 from __future__ import annotations
 
 import uuid
 
-from src.graphs.query_graph.routing import route_after_classify, route_after_grade
+from src.graphs.query_graph.routing import (
+    route_after_classify,
+    route_after_detect_language,
+    route_after_grade,
+)
 from src.graphs.query_graph.state import QueryState
 
 TENANT_ID = uuid.uuid4()
@@ -79,6 +83,33 @@ def test_route_after_grade_empty_chunks_goes_to_guardrails() -> None:
     """Empty graded_chunks routes to node_guardrails_output."""
     state = _make_state(graded_chunks=[], no_results=True)
     assert route_after_grade(state) == "node_guardrails_output"
+
+
+# ── route_after_detect_language ───────────────────────────────────────────────
+
+
+def test_route_after_detect_language_english_routes_to_translate() -> None:
+    """Non-Polish detected language → node_translate_query."""
+    state = _make_state(detected_language="eng", cross_language_retrieval=False)
+    assert route_after_detect_language(state) == "node_translate_query"
+
+
+def test_route_after_detect_language_polish_routes_to_retrieve() -> None:
+    """Polish detected → skip translation, go to node_retrieve."""
+    state = _make_state(detected_language="pol", cross_language_retrieval=False)
+    assert route_after_detect_language(state) == "node_retrieve"
+
+
+def test_route_after_detect_language_already_cross_routes_to_retrieve() -> None:
+    """cross_language_retrieval already True → skip translate."""
+    state = _make_state(detected_language="eng", cross_language_retrieval=True)
+    assert route_after_detect_language(state) == "node_retrieve"
+
+
+def test_route_after_detect_language_none_routes_to_retrieve() -> None:
+    """No detected language (None) → go directly to node_retrieve."""
+    state = _make_state(detected_language=None, cross_language_retrieval=False)
+    assert route_after_detect_language(state) == "node_retrieve"
 
 
 def test_route_after_grade_multiple_chunks_goes_to_generate() -> None:

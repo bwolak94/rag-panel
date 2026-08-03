@@ -64,3 +64,9 @@ class QueryState(BaseModel):
     completion_tokens: int = 0
     no_results: bool = False
     halt: bool = False  # True → guardrails short-circuit
+
+    # Multi-language support (TASK-027) — set by node_detect_language / node_translate_query
+    detected_language: str | None = None  # ISO 639-3: "pol", "eng"
+    translated_query: str | None = None  # query in collection's primary language
+    cross_language_retrieval: bool = False  # True when parallel retrieval was done
+    response_language: str = "pol"  # language for final answer

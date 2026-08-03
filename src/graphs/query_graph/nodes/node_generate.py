@@ -292,11 +292,20 @@ async def node_generate(state: QueryState, config: dict[str, Any]) -> dict[str, 
     # Resolve prompt version: prompt_config.generate_prompt_version → "v1" default.
     control_version: str = state.prompt_config.get("generate_prompt_version", "v1")
 
+    _lang_names_full: dict[str, str] = {
+        "pol": "Polish",
+        "eng": "English",
+        "deu": "German",
+        "fra": "French",
+        "spa": "Spanish",
+    }
+    response_lang_name = _lang_names_full.get(state.response_language, state.response_language)
     prompt = (
         _load_prompt(control_version)
         .replace("{{QUESTION}}", state.question)
         .replace("{{CONTEXT_CHUNKS}}", context_chunks_text)
         .replace("{{CONVERSATION_HISTORY}}", history_text)
+        .replace("{{RESPONSE_LANGUAGE}}", response_lang_name)
     )
 
     # Inject graph context block immediately before <CONTEXT> when available.

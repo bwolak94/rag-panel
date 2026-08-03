@@ -157,35 +157,70 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
         allowed_collection_ids=list(state.allowed_collection_ids),
     )
 
-    # Search Qdrant — dispatch to hybrid or dense based on collection config.
-    try:
-        results = await retrieval.search(
-            ctx=tenant_ctx,
-            qdrant_collection=qdrant_collection,
-            query_vector=query_vector,
-            top_k=top_k,
-            score_threshold=score_threshold,
-            search_mode=search_mode,
-            query_text=query_text,
-        )
-    except EmptyCollectionListError:
-        raise
-    except Exception as exc:
-        raise QueryNodeError(f"retrieval_error: {type(exc).__name__}") from exc
+    async def _search_and_serialize(query_vec: list[float], q_text: str) -> list[dict[str, Any]]:
+        try:
+            res = await retrieval.search(
+                ctx=tenant_ctx,
+                qdrant_collection=qdrant_collection,
+                query_vector=query_vec,
+                top_k=top_k,
+                score_threshold=score_threshold,
+                search_mode=search_mode,
+                query_text=q_text,
+            )
+        except EmptyCollectionListError:
+            raise
+        except Exception as exc:
+            raise QueryNodeError(f"retrieval_error: {type(exc).__name__}") from exc
+        return [
+            {
+                "point_id": str(r.point_id),
+                "document_id": str(r.document_id),
+                "score": r.score,
+                "page_number": r.page_number,
+                "highlight_text": r.highlight_text,
+                "collection_id": str(r.collection_id) if r.collection_id else None,
+                "payload": r.payload,
+            }
+            for r in res
+        ]
 
-    # Serialize results into dicts for state (UUID -> str for JSON compatibility)
-    retrieved_chunks: list[dict[str, Any]] = []
-    for r in results:
-        chunk: dict[str, Any] = {
-            "point_id": str(r.point_id),
-            "document_id": str(r.document_id),
-            "score": r.score,
-            "page_number": r.page_number,
-            "highlight_text": r.highlight_text,
-            "collection_id": str(r.collection_id) if r.collection_id else None,
-            "payload": r.payload,
-        }
-        retrieved_chunks.append(chunk)
+    # ── Primary retrieval ─────────────────────────────────────────────────────
+    primary_chunks = await _search_and_serialize(query_vector, query_text)
+
+    # ── Cross-language parallel retrieval (TASK-027) ──────────────────────────
+    # When translated_query is available, embed and search in parallel, then merge.
+
+    retrieved_chunks: list[dict[str, Any]]
+    if state.cross_language_retrieval and state.translated_query:
+        try:
+            translated_resp = await llm.embeddings(
+                model=model_record.model_id,
+                input=[state.translated_query],
+                base_url=model_record.endpoint_url,
+            )
+            translated_vector: list[float] = translated_resp.data[0].embedding
+        except Exception as exc:
+            raise QueryNodeError(f"embedding_error (translated): {type(exc).__name__}") from exc
+
+        translated_chunks = await _search_and_serialize(translated_vector, state.translated_query)
+
+        # Merge: deduplicate by point_id, keep highest score
+        seen: dict[str, dict[str, Any]] = {}
+        for chunk in primary_chunks + translated_chunks:
+            pid = chunk["point_id"]
+            if pid not in seen or chunk["score"] > seen[pid]["score"]:
+                seen[pid] = chunk
+        retrieved_chunks = sorted(seen.values(), key=lambda c: c["score"], reverse=True)[:top_k]
+        logger.info(
+            "node_retrieve.cross_language_merge",
+            tenant_id=str(state.tenant_id),
+            primary_count=len(primary_chunks),
+            translated_count=len(translated_chunks),
+            merged_count=len(retrieved_chunks),
+        )
+    else:
+        retrieved_chunks = primary_chunks
 
     elapsed_ms = int((datetime.now(UTC) - node_start).total_seconds() * 1000)
     _lf_update_span(
