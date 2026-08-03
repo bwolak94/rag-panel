@@ -19,6 +19,7 @@ from src.core.exceptions import (
     InvalidDocumentStateError,
     NotFoundError,
     PermissionDeniedError,
+    QuotaExceededError,
     ServiceUnavailableError,
     TenantIsolationError,
 )
@@ -99,6 +100,28 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=503,
             content={"detail": "Vector store unavailable, please try again later"},
             headers={"Retry-After": "60"},
+        )
+
+    @app.exception_handler(QuotaExceededError)
+    async def quota_exceeded_handler(req: Request, exc: QuotaExceededError) -> JSONResponse:
+        content = {
+            "type": "about:blank",
+            "title": "Quota Exceeded",
+            "status": 429,
+            "detail": str(exc),
+            "quota_type": exc.quota_type,
+            "limit": exc.limit,
+            "current": exc.current,
+        }
+        if exc.reset_at:
+            content["reset_at"] = exc.reset_at
+        retry_after = "3600"
+        if exc.quota_type == "monthly_queries":
+            retry_after = "86400"
+        return JSONResponse(
+            status_code=429,
+            content=content,
+            headers={"Retry-After": retry_after},
         )
 
     @app.exception_handler(EmptyCollectionListError)

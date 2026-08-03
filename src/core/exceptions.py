@@ -82,3 +82,28 @@ class QueryNodeError(RAGPlatformError):
     Caught by ChatService._invoke_graph().
     Must never contain question content, chunk text, or PII in the message.
     """
+
+
+class QuotaExceededError(RAGPlatformError):
+    """Tenant quota exceeded. Maps to HTTP 429 with problem detail.
+
+    Attributes:
+        quota_type: Which quota was exceeded (e.g. 'monthly_queries').
+        limit: The configured limit value.
+        current: The current usage value.
+        reset_at: When the quota counter resets (None for non-rolling quotas).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        quota_type: str,
+        limit: int,
+        current: int,
+        reset_at: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.quota_type = quota_type
+        self.limit = limit
+        self.current = current
+        self.reset_at = reset_at

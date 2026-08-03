@@ -21,6 +21,7 @@ from typing import Annotated
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
+from fastapi_limiter.depends import RateLimiter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +34,7 @@ from src.api.schemas.chat import (
     ChatCompletionUsage,
     ChatMessage,
 )
+from src.core.clients.redis_client import get_redis_client
 from src.core.database import get_db_session
 from src.core.exceptions import LLMUnavailableError
 from src.db.models.rag_pipeline import RagPipeline
@@ -44,6 +46,7 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/v1", tags=["chat"])
 
 _require_chat = require_permission("chat:query")
+_rate_limiter = RateLimiter(times=20, seconds=60)
 
 # Shown in GET /v1/models when no pipelines are seeded. Allows Open WebUI to start
 # without any DB seed data; removed once real pipelines are configured.
@@ -94,6 +97,7 @@ async def list_models(
     "/chat/completions",
     response_model=None,  # Union with StreamingResponse not representable as a Pydantic model
     summary="OpenAI-compatible chat completion (LangGraph RAG query graph)",
+    dependencies=[Depends(_rate_limiter)],
 )
 async def chat_completions(
     body: ChatCompletionRequest,
@@ -107,6 +111,11 @@ async def chat_completions(
         return await _stub_response(body)
 
     # ── Real mode ─────────────────────────────────────────────────────────────
+    # Check monthly query quota before doing any expensive work
+    from src.domain.quota_service import QuotaService
+
+    await QuotaService(session, get_redis_client()).check_query(ctx.tenant_id)
+
     # resolve_pipeline_by_model raises HTTPException(404) when the pipeline is not
     # found within this tenant — that propagates as-is to the client.
     pipeline = await resolve_pipeline_by_model(body.model, ctx, session)

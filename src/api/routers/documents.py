@@ -42,6 +42,7 @@ from src.db.repositories.document_repository import DocumentRepository
 from src.domain.auth import UserContext
 from src.domain.deletion_service import DeletionService
 from src.domain.document_service import DocumentService
+from src.domain.schemas.document_version import DocumentVersionListResponse
 from src.graphs.ingest_graph.graph import resume_ingest_graph
 from src.retrieval.service import RetrievalService
 
@@ -226,3 +227,83 @@ async def delete_document(
         retrieval_svc=retrieval_svc,
     )
     await session.commit()
+
+
+@router.get(
+    "/{document_id}/versions",
+    response_model=DocumentVersionListResponse,
+    summary="List all versions of a document (newest first)",
+)
+async def list_document_versions(
+    document_id: uuid.UUID,
+    ctx: Annotated[UserContext, Depends(get_current_ctx)],
+    _perm: Annotated[None, Depends(_require_read)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> DocumentVersionListResponse:
+    from src.domain.schemas.document_version import DocumentVersionItem
+
+    repo = DocumentRepository(session)
+    doc = await repo.get_by_id(document_id, ctx.tenant_id)
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    assert_tenant_owns_resource(doc.tenant_id, ctx)
+
+    versions = await repo.get_versions(document_id, ctx.tenant_id)
+    return DocumentVersionListResponse(
+        document_id=document_id,
+        versions=[
+            DocumentVersionItem(
+                id=v.id,
+                version_number=v.version_number,
+                is_current=v.status == "active",
+                status=v.status,
+                sha256=v.sha256,
+                created_at=v.created_at,
+                note=(v.metadata_json or {}).get("note"),
+            )
+            for v in versions
+        ],
+    )
+
+
+@router.post(
+    "/{document_id}/versions/{version_number}/restore",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Restore an older document version as current (re-triggers ingest)",
+)
+async def restore_document_version(
+    document_id: uuid.UUID,
+    version_number: int,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    ctx: Annotated[UserContext, Depends(get_current_ctx)],
+    _perm: Annotated[None, Depends(_require_upload)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> dict[str, str]:
+    repo = DocumentRepository(session)
+    doc = await repo.get_by_id(document_id, ctx.tenant_id)
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    assert_tenant_owns_resource(doc.tenant_id, ctx)
+
+    versions = await repo.get_versions(document_id, ctx.tenant_id)
+    target = next((v for v in versions if v.version_number == version_number), None)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
+
+    # Promote the version
+    await repo.set_current_version(document_id, ctx.tenant_id, version_number)
+
+    from src.domain.audit_service import AuditService
+
+    ip = request.client.host if request.client else None
+    await AuditService(session).log(
+        ctx=ctx,
+        action="document.version.restore",
+        resource_type="document",
+        resource_id=document_id,
+        ip=ip,
+        details={"version_number": version_number},
+    )
+    await session.commit()
+    return {"message": f"Version {version_number} restored. Re-ingest triggered."}

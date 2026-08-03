@@ -9,6 +9,7 @@ from src.db.models.collection import Collection, CollectionAccess
 from src.db.models.conversation import Conversation
 from src.db.models.document import Document
 from src.db.models.document_version import DocumentVersion
+from src.db.models.export import Export
 from src.db.models.feedback import Feedback
 from src.db.models.ingestion_job import IngestionJob
 from src.db.models.knowledge_graph import EntityRelation, MedicalEntity
@@ -30,6 +31,7 @@ __all__ = [
     "Base",
     "BulkImportJob",
     "ChunksRegistry",
+    "Export",
     "Collection",
     "CollectionAccess",
     "Conversation",
