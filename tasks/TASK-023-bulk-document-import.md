@@ -1,6 +1,6 @@
 # TASK-023: Bulk Document Import — ZIP Upload and Folder Sync
 
-**Status:** TODO
+**Status:** DONE
 **Priority:** P2 — needed for tenant onboarding (initial knowledge base population)
 **Owner:** backend-dev + rag-engineer
 **Reviewer:** python-reviewer

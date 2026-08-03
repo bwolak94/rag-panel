@@ -28,6 +28,7 @@ dependencies = [
     "cachetools>=5.3",
     "rank-bm25>=0.2",
     "fastembed>=0.4",
+    "python-multipart>=0.0.32",
 ]
 
 [dependency-groups]

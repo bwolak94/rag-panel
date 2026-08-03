@@ -1,6 +1,6 @@
 # TASK-022: Webhook Notifications for Document and Pipeline Events
 
-**Status:** TODO
+**Status:** DONE
 **Priority:** P2 — enables external system integration (clinic EHR, Teams/Slack alerts)
 **Owner:** backend-dev
 **Reviewer:** python-reviewer + security-auditor
