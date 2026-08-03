@@ -41,6 +41,7 @@ def _make_app(ctx: UserContext) -> Any:
 
     from fastapi import FastAPI
 
+    from src.api.routers.chat import _rate_limiter
     from src.main import create_app
 
     app: FastAPI = create_app()
@@ -51,8 +52,12 @@ def _make_app(ctx: UserContext) -> Any:
         session.scalars = AsyncMock(return_value=iter([]))
         yield session
 
+    async def _noop_rate_limiter() -> None:
+        return None
+
     app.dependency_overrides[get_current_ctx] = lambda: ctx
     app.dependency_overrides[get_db_session] = _fake_session
+    app.dependency_overrides[_rate_limiter] = _noop_rate_limiter
     return app
 
 

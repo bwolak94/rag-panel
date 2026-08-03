@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models.document import Document
+from src.db.models.document_version import DocumentVersion
 from src.db.models.ingestion_job import IngestionJob
 
 ALLOWED_MIME_TYPES: frozenset[str] = frozenset(
@@ -219,3 +220,96 @@ class DocumentRepository:
             .limit(1)
         )
         return (await self._session.execute(q)).scalar_one_or_none()
+
+    # ── Document versioning (TASK-025) ────────────────────────────────────────
+
+    async def find_by_filename(
+        self, tenant_id: uuid.UUID, collection_id: uuid.UUID, filename: str
+    ) -> Document | None:
+        """Return a non-deleted document matching original_filename in the collection."""
+        q = select(Document).where(
+            Document.tenant_id == tenant_id,
+            Document.collection_id == collection_id,
+            Document.original_filename == filename,
+            Document.status != "deleted",
+        )
+        return (await self._session.execute(q)).scalar_one_or_none()
+
+    async def get_versions(
+        self, document_id: uuid.UUID, tenant_id: uuid.UUID
+    ) -> list[DocumentVersion]:
+        """Return all versions ordered newest first."""
+        q = (
+            select(DocumentVersion)
+            .where(
+                DocumentVersion.document_id == document_id,
+                DocumentVersion.tenant_id == tenant_id,
+            )
+            .order_by(DocumentVersion.version_number.desc())
+        )
+        return list((await self._session.execute(q)).scalars().all())
+
+    async def create_version(
+        self,
+        *,
+        document_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        version_number: int,
+        sha256: str,
+        ingestion_job_id: uuid.UUID | None = None,
+        note: str | None = None,
+        created_by: uuid.UUID | None = None,
+    ) -> DocumentVersion:
+        """Create a new DocumentVersion row (status='draft')."""
+        from datetime import UTC
+        from datetime import datetime as dt
+
+        version = DocumentVersion(
+            document_id=document_id,
+            tenant_id=tenant_id,
+            version_number=version_number,
+            sha256=sha256,
+            status="draft",
+            ingestion_job_id=ingestion_job_id,
+            valid_from=dt.now(UTC),
+            metadata_json={"note": note, "created_by": str(created_by)} if note else None,
+        )
+        self._session.add(version)
+        await self._session.flush()
+        return version
+
+    async def set_current_version(
+        self,
+        document_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        version_number: int,
+    ) -> None:
+        """Atomically set a version as active; mark all others superseded."""
+        promote_q = select(DocumentVersion).where(
+            DocumentVersion.document_id == document_id,
+            DocumentVersion.tenant_id == tenant_id,
+            DocumentVersion.version_number == version_number,
+        )
+        version = (await self._session.execute(promote_q)).scalar_one_or_none()
+        if version is None:
+            return
+
+        await self._session.execute(
+            update(DocumentVersion)
+            .where(
+                DocumentVersion.document_id == document_id,
+                DocumentVersion.tenant_id == tenant_id,
+                DocumentVersion.status == "active",
+            )
+            .values(status="superseded")
+        )
+        await self._session.execute(
+            update(DocumentVersion).where(DocumentVersion.id == version.id).values(status="active")
+        )
+        all_versions = await self.get_versions(document_id, tenant_id)
+        await self._session.execute(
+            update(Document)
+            .where(Document.id == document_id)
+            .values(version_count=len(all_versions))
+        )
+        await self._session.flush()

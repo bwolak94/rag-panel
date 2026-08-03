@@ -29,6 +29,9 @@ dependencies = [
     "rank-bm25>=0.2",
     "fastembed>=0.4",
     "python-multipart>=0.0.32",
+    "weasyprint>=69.0",
+    "jinja2>=3.1.6",
+    "fastapi-limiter==0.1.6",
 ]
 
 [dependency-groups]
@@ -77,7 +80,7 @@ plugins = ["pydantic.mypy"]
 exclude = ["tests/", "src/db/migrations/"]
 
 [[tool.mypy.overrides]]
-module = ["rank_bm25", "fastembed"]
+module = ["rank_bm25", "fastembed", "weasyprint"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

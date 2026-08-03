@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <title>{{ conversation.title or "Rozmowa" }} — eksport</title>
+  <style>
+    body {
+      font-family: "DejaVu Sans", Arial, sans-serif;
+      font-size: 11pt;
+      color: #1a1a1a;
+      margin: 2cm 2.5cm;
+    }
+    h1 { font-size: 16pt; margin-bottom: 4px; }
+    .meta { color: #555; font-size: 9pt; margin-bottom: 24px; }
+    .message { margin-bottom: 16px; }
+    .user-msg .bubble {
+      background: #e8f0fe;
+      border-radius: 12px 12px 4px 12px;
+      padding: 10px 14px;
+      display: inline-block;
+      max-width: 75%;
+      float: right;
+      clear: both;
+    }
+    .assistant-msg .bubble {
+      background: #f5f5f5;
+      border-radius: 12px 12px 12px 4px;
+      padding: 10px 14px;
+      display: inline-block;
+      max-width: 75%;
+      float: left;
+      clear: both;
+    }
+    .role-label {
+      font-size: 8pt;
+      color: #777;
+      margin-bottom: 3px;
+    }
+    .user-msg .role-label { text-align: right; }
+    .clearfix::after { content: ""; display: table; clear: both; }
+    .sources { margin-top: 8px; font-size: 8pt; color: #555; }
+    .sources ul { margin: 4px 0 0 16px; padding: 0; }
+    footer {
+      position: fixed;
+      bottom: 1cm;
+      left: 2.5cm;
+      right: 2.5cm;
+      text-align: center;
+      font-size: 8pt;
+      color: #888;
+      border-top: 1px solid #ddd;
+      padding-top: 4px;
+    }
+    .timestamp { font-size: 8pt; color: #999; margin-top: 3px; }
+  </style>
+</head>
+<body>
+  <h1>{{ conversation.title | e or "Rozmowa" }}</h1>
+  <div class="meta">
+    Wyeksportowano: {{ exported_at }}<br/>
+    Identyfikator: {{ conversation.id }}
+  </div>
+
+  {% for msg in messages %}
+  <div class="message {{ 'user-msg' if msg.role == 'user' else 'assistant-msg' }} clearfix">
+    <div class="role-label">{{ 'Użytkownik' if msg.role == 'user' else 'Asystent AI' }}</div>
+    <div class="bubble">
+      {{ msg.content | e }}
+      {% if msg.sources %}
+      <div class="sources">
+        <strong>Źródła:</strong>
+        <ul>
+          {% for src in msg.sources %}
+          <li>{{ src.document_name | e }}{% if src.page_number %} (s. {{ src.page_number }}){% endif %}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+    </div>
+    <div class="clearfix"></div>
+    <div class="timestamp">{{ msg.created_at }}</div>
+  </div>
+  {% endfor %}
+
+  <footer>
+    Odpowiedzi generowane przez AI nie stanowią porady medycznej. &nbsp;|&nbsp;
+    Wygenerowano przez platformę RAG &mdash; {{ exported_at }}
+  </footer>
+</body>
+</html>

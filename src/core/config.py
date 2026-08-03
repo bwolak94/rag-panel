@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     NOT_FOUND_MESSAGE: str = "I could not find an answer in the available documents."
     DEFAULT_CONTEXT_TOKEN_BUDGET: int = 6000
 
+    # Tenant quota defaults (overridable per tenant via tenants.settings.quotas)
+    QUOTA_MAX_DOCUMENTS: int = 500
+    QUOTA_MAX_STORAGE_BYTES: int = 5 * 1024 * 1024 * 1024  # 5 GB
+    QUOTA_MAX_MONTHLY_QUERIES: int = 10000
+    QUOTA_MAX_MAU: int = 50
+    QUOTA_MAX_COLLECTIONS: int = 20
+
     # Langfuse (optional — disabled when keys are absent)
     LANGFUSE_PUBLIC_KEY: str | None = None
     LANGFUSE_SECRET_KEY: str | None = None
