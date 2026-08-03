@@ -87,6 +87,10 @@ class IngestState(BaseModel):
     # 0 when vision_extraction_enabled=False or no image/table sections were present.
     vision_chunks_count: int = 0
 
+    # Semantic dedup — set by node_semantic_dedup (TASK-029)
+    dedup_similarity: float | None = None  # cosine similarity to most similar doc
+    dedup_similar_doc_id: UUID | None = None  # UUID of most similar existing document
+
     # Pipeline control
     status: str = "uploaded"
     error: str | None = None
