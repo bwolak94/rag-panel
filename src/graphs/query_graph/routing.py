@@ -21,6 +21,23 @@ def route_after_classify(state: QueryState) -> str:
     return "node_guardrails_output"
 
 
+def route_after_detect_language(state: QueryState) -> str:
+    """Route after detect_language node.
+
+    Returns:
+        "node_translate_query" when detected_language differs from collection primary language
+        and cross-language retrieval has not already been performed.
+        "node_retrieve" otherwise (same language or already translated).
+    """
+    if (
+        state.detected_language
+        and state.detected_language != "pol"
+        and not state.cross_language_retrieval
+    ):
+        return "node_translate_query"
+    return "node_retrieve"
+
+
 def route_after_grade(state: QueryState) -> str:
     """Route after grade_documents node.
 

@@ -1,6 +1,7 @@
 """Query graph nodes — imported by graph.py."""
 
 from src.graphs.query_graph.nodes.node_classify_intent import node_classify_intent
+from src.graphs.query_graph.nodes.node_detect_language import node_detect_language
 from src.graphs.query_graph.nodes.node_generate import node_generate
 from src.graphs.query_graph.nodes.node_grade_documents import node_grade_documents
 from src.graphs.query_graph.nodes.node_graph_retrieve import node_graph_retrieve
@@ -8,10 +9,13 @@ from src.graphs.query_graph.nodes.node_guardrails_output import node_guardrails_
 from src.graphs.query_graph.nodes.node_rerank import node_rerank
 from src.graphs.query_graph.nodes.node_retrieve import node_retrieve
 from src.graphs.query_graph.nodes.node_rewrite_query import node_rewrite_query
+from src.graphs.query_graph.nodes.node_translate_query import node_translate_query
 
 __all__ = [
     "node_classify_intent",
     "node_rewrite_query",
+    "node_detect_language",
+    "node_translate_query",
     "node_retrieve",
     "node_graph_retrieve",
     "node_rerank",
