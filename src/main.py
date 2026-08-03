@@ -24,6 +24,7 @@ from src.api.routers import (
     tenants,
     tos,
 )
+from src.api.routers.admin_analytics import router as admin_analytics_router
 from src.api.routers.admin_audit_log import router as admin_audit_log_router
 from src.api.routers.platform_onboarding import router as platform_onboarding_router
 from src.api.routers.webhooks import webhook_router
@@ -106,6 +107,7 @@ def create_app() -> FastAPI:
     app.include_router(tos.router, prefix="/api/v1")  # /api/v1/terms, /api/v1/tenants/.../terms/*
     app.include_router(admin_review.router)  # /api/v1/admin/...
     app.include_router(admin_audit_log_router)  # /api/v1/admin/audit-log
+    app.include_router(admin_analytics_router)  # /api/v1/admin/analytics/*
     app.include_router(platform_onboarding_router)  # /api/v1/platform/onboarding
 
     # ToS check middleware — uses the shared Redis singleton (same pool as routers)

@@ -86,3 +86,5 @@ class Document(Base, TimestampMixin):
     # Denormalised counter — updated in the same transaction as the new version row.
     # Avoids a COUNT(*) query on every document list response.
     version_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    # Semantic dedup — mean-pooled document embedding; populated by node_semantic_dedup.
+    dedup_embedding: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)

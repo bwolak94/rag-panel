@@ -89,10 +89,7 @@ class AuditLogRepository:
         if cursor_ts and cursor_id:
             q = q.where(
                 (AuditLog.created_at < cursor_ts)
-                | (
-                    (AuditLog.created_at == cursor_ts)
-                    & (AuditLog.id < cursor_id)
-                )
+                | ((AuditLog.created_at == cursor_ts) & (AuditLog.id < cursor_id))
             )
 
         q = q.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(page_size + 1)

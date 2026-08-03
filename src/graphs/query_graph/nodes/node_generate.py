@@ -141,6 +141,56 @@ def _build_context_chunks(chunks: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
+def _build_graph_context_block(graph_context: list[dict[str, Any]]) -> str:
+    """Render knowledge-graph entities and relations as an XML block for the prompt.
+
+    Only icd_code and atc_code attributes are included when they are not None.
+    Entity names and relation names are treated as untrusted data (document-derived) —
+    they appear inside the XML value attributes, never in log output.
+
+    Args:
+        graph_context: List of entity dicts produced by node_graph_retrieve.
+            Each dict has keys: entity, entity_type, icd_code, atc_code, related.
+            ``related`` is a list of dicts with keys: name, relation, direction,
+            confidence.
+
+    Returns:
+        A ``<graph_context>...</graph_context>`` XML string, or an empty string
+        when *graph_context* is falsy.
+    """
+    if not graph_context:
+        return ""
+
+    lines: list[str] = ["<graph_context>"]
+    for entry in graph_context:
+        entity_name = entry.get("entity", "")
+        entity_type = entry.get("entity_type", "")
+        icd_code: str | None = entry.get("icd_code")
+        atc_code: str | None = entry.get("atc_code")
+
+        # Build opening tag — only include optional code attributes when present
+        attrs = f'name="{entity_name}" type="{entity_type}"'
+        if icd_code is not None:
+            attrs += f' icd_code="{icd_code}"'
+        if atc_code is not None:
+            attrs += f' atc_code="{atc_code}"'
+        lines.append(f"  <entity {attrs}>")
+
+        for rel in entry.get("related", []):
+            rel_name = rel.get("name", "")
+            rel_type = rel.get("relation", "")
+            direction = rel.get("direction", "")
+            confidence = rel.get("confidence", 0.0)
+            lines.append(
+                f'    <related name="{rel_name}" relation="{rel_type}"'
+                f' direction="{direction}" confidence="{confidence:.2f}"/>'
+            )
+
+        lines.append("  </entity>")
+    lines.append("</graph_context>")
+    return "\n".join(lines)
+
+
 def _map_citation_to_source(
     citation: dict[str, Any], chunks: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -248,6 +298,18 @@ async def node_generate(state: QueryState, config: dict[str, Any]) -> dict[str, 
         .replace("{{CONTEXT_CHUNKS}}", context_chunks_text)
         .replace("{{CONVERSATION_HISTORY}}", history_text)
     )
+
+    # Inject graph context block immediately before <CONTEXT> when available.
+    # graph_context is set by node_graph_retrieve (opt-in via graph_rag_enabled).
+    # Log only the count — never log entity names (GDPR).
+    if state.graph_context:
+        graph_block = _build_graph_context_block(state.graph_context)
+        prompt = prompt.replace("<CONTEXT>", f"{graph_block}\n\n<CONTEXT>")
+        logger.debug(
+            "node_generate.graph_context_injected",
+            tenant_id=str(state.tenant_id),
+            entity_count=len(state.graph_context),
+        )
 
     try:
         response = await llm.chat_completion(

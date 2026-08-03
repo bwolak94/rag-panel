@@ -188,7 +188,9 @@ async def node_semantic_dedup(state: IngestState, config: dict[str, Any]) -> dic
                 started_at=step_start,
                 meta=meta,
             )
-            _lf_update_span(metadata={**lf_meta, "result": "near_duplicate", "routed_to": new_status})  # noqa: E501
+            _lf_update_span(
+                metadata={**lf_meta, "result": "near_duplicate", "routed_to": new_status}
+            )  # noqa: E501
             logger.info(
                 "node_semantic_dedup.near_duplicate",
                 document_id=str(state.document_id),
