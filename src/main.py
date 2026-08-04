@@ -26,6 +26,7 @@ from src.api.routers import (
 )
 from src.api.routers.admin_analytics import router as admin_analytics_router
 from src.api.routers.admin_audit_log import router as admin_audit_log_router
+from src.api.routers.admin_cache import router as admin_cache_router
 from src.api.routers.admin_quota import router as admin_quota_router
 from src.api.routers.admin_webhooks import router as admin_webhooks_router
 from src.api.routers.bulk_import import router as bulk_import_router
@@ -121,6 +122,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_analytics_router)  # /api/v1/admin/analytics/*
     app.include_router(admin_webhooks_router)  # /api/v1/admin/webhooks
     app.include_router(admin_quota_router)  # /api/v1/admin/quota/status
+    app.include_router(admin_cache_router)  # /api/v1/admin/cache/*
     app.include_router(bulk_import_router)  # /api/v1/collections/{id}/documents/bulk-import
     app.include_router(exports_router)  # /api/v1/conversations/{id}/export, /api/v1/exports/*
     app.include_router(platform_onboarding_router)  # /api/v1/platform/onboarding
