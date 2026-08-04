@@ -8,6 +8,7 @@ re-exported from src.domain.auth so both API routes and RetrievalService can imp
 from a single, consistent location without crossing layer boundaries.
 """
 
+import dataclasses
 from collections.abc import Awaitable, Callable
 from typing import Annotated
 from uuid import UUID
@@ -37,6 +38,7 @@ __all__ = [
     "require_collection_read",
     "require_collection_write",
     "require_permission",
+    "require_realm_role",
 ]
 
 
@@ -79,6 +81,9 @@ async def get_current_ctx(
     tenant_id_str: str | None = claims.get("tenant_id")
     email: str = claims.get("email", "")
     display_name: str = claims.get("name", "")
+    realm_roles: frozenset[str] = frozenset(
+        claims.get("realm_access", {}).get("roles", [])
+    )
 
     if not tenant_id_str:
         raise HTTPException(
@@ -105,6 +110,11 @@ async def get_current_ctx(
         # User is not a member of this tenant — 403, not 404 (no existence leak)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
+    # Attach JWT realm roles (Keycloak realm_access.roles) — not stored in DB,
+    # evaluated per request from the validated token.
+    if realm_roles:
+        user_ctx = dataclasses.replace(user_ctx, realm_roles=realm_roles)
+
     return user_ctx
 
 
@@ -121,6 +131,32 @@ def require_permission(permission_code: str) -> Callable[..., Awaitable[None]]:
                 "permission_denied",
                 user_id=str(ctx.user_id),
                 permission=permission_code,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions",
+            )
+
+    return _check
+
+
+def require_realm_role(role_name: str) -> Callable[..., Awaitable[None]]:
+    """Return a FastAPI dependency that raises 403 if the user lacks the JWT realm role.
+
+    Realm roles come from Keycloak's realm_access.roles claim — they are NOT
+    stored in the application DB. Use this for platform-level roles (e.g. platform:admin)
+    that span all tenants, as opposed to `require_permission` for tenant-scoped DB permissions.
+
+    Usage:
+        _: Annotated[None, Depends(require_realm_role("platform:admin"))]
+    """
+
+    async def _check(ctx: Annotated[UserContext, Depends(get_current_ctx)]) -> None:
+        if role_name not in ctx.realm_roles:
+            logger.warning(
+                "realm_role_denied",
+                user_id=str(ctx.user_id),
+                required_role=role_name,
             )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

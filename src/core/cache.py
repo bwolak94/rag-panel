@@ -94,7 +94,7 @@ class RAGCache:
             if raw is None:
                 return None
             chunks: list[dict[str, Any]] = json.loads(raw)
-            logger.debug("cache.retrieval_hit", tenant_id=str(tenant_id), key_prefix=key[:40])
+            logger.debug("cache.retrieval_hit", tenant_id=str(tenant_id))
             return chunks
         except Exception as exc:
             logger.warning("cache.retrieval_get_error", error=type(exc).__name__)
@@ -178,10 +178,14 @@ class RAGCache:
         """
         inv_key = _invalidation_set_key(tenant_id, collection_id)
         try:
-            members = await self._redis.smembers(inv_key)
+            # Use sscan_iter (cursor-based) instead of smembers to avoid loading
+            # unbounded sets into memory in a single round-trip (DoS mitigation).
+            members: list[bytes] = []
+            async for member in self._redis.sscan_iter(inv_key, count=100):
+                members.append(member)
             if not members:
                 return 0
-            keys_to_delete = list(members) + [inv_key.encode()]
+            keys_to_delete = members + [inv_key]
             deleted = await self._redis.delete(*keys_to_delete)
             logger.info(
                 "cache.collection_invalidated",

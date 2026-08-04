@@ -45,8 +45,9 @@ def _utcnow() -> datetime:
 
 
 class OnboardingService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, caller_id: uuid.UUID | None = None) -> None:
         self._session = session
+        self._caller_id = caller_id  # platform admin who owns this session (ownership check)
 
     # ── Session management ────────────────────────────────────────────────────
 
@@ -79,7 +80,7 @@ class OnboardingService:
         return session_obj
 
     async def get_session(self, session_id: uuid.UUID) -> OnboardingSession:
-        """Fetch session; raise NotFoundError if missing/abandoned/expired."""
+        """Fetch session; raise NotFoundError if missing/abandoned/expired/not owned."""
         obj = await self._session.get(OnboardingSession, session_id)
         if obj is None or obj.status == "abandoned":
             raise NotFoundError(f"Onboarding session {session_id} not found")
@@ -92,6 +93,9 @@ class OnboardingService:
             )
             await self._session.flush()
             raise NotFoundError(f"Onboarding session {session_id} has expired")
+        # Ownership check: platform admins may only access sessions they created
+        if self._caller_id is not None and obj.created_by != self._caller_id:
+            raise NotFoundError(f"Onboarding session {session_id} not found")
         return obj
 
     async def abandon_session(self, session_id: uuid.UUID) -> None:

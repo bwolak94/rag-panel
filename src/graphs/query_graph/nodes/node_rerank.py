@@ -92,7 +92,7 @@ def _apply_scores(
     for entry in scores:
         idx = entry.get("chunk_index")
         raw_score = entry.get("score")
-        if isinstance(idx, int) and isinstance(raw_score, (int, float)):
+        if isinstance(idx, int) and isinstance(raw_score, int | float):
             # Clamp to [0, 10] to guard against out-of-range values.
             score_map[idx] = max(0, min(10, int(raw_score)))
 

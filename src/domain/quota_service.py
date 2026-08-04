@@ -48,7 +48,7 @@ def _month_reset() -> datetime:
 def _tenant_quota(tenant: Tenant, key: str, default: int) -> int:
     quotas: dict[str, Any] = (tenant.settings or {}).get("quotas", {})
     val = quotas.get(key, default)
-    return int(val) if isinstance(val, (int, float)) else default
+    return int(val) if isinstance(val, int | float) else default
 
 
 class QuotaService:

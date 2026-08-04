@@ -20,12 +20,28 @@ import pytest
 from src.core.cache import RAGCache, _response_key, _retrieval_key
 
 
+async def _empty_async_iter(*_args: object, **_kwargs: object) -> object:
+    """Async generator yielding nothing — simulates empty sscan_iter."""
+    return
+    yield  # type: ignore[misc]  # unreachable, but required to make this a generator
+
+
+def _sscan_iter_returning(*items: bytes):
+    """Return an async generator that yields the given items."""
+
+    async def _gen(*_args: object, **_kwargs: object) -> object:
+        for item in items:
+            yield item
+
+    return _gen
+
+
 def _make_redis(get_return: bytes | None = None) -> MagicMock:
     redis = MagicMock()
     redis.get = AsyncMock(return_value=get_return)
     redis.setex = AsyncMock()
     redis.delete = AsyncMock(return_value=1)
-    redis.smembers = AsyncMock(return_value=set())
+    redis.sscan_iter = _empty_async_iter  # default: no members
 
     pipeline_mock = MagicMock()
     pipeline_mock.__aenter__ = AsyncMock(return_value=pipeline_mock)
@@ -157,7 +173,7 @@ async def test_set_retrieval_registers_invalidation_keys() -> None:
 @pytest.mark.asyncio
 async def test_invalidate_collection_returns_zero_when_no_keys() -> None:
     redis = _make_redis()
-    redis.smembers = AsyncMock(return_value=set())
+    redis.sscan_iter = _empty_async_iter  # no members
     cache = RAGCache(redis)
     deleted = await cache.invalidate_collection(TENANT_A, COLLECTION_ID)
     assert deleted == 0
@@ -169,7 +185,7 @@ async def test_invalidate_collection_deletes_keys() -> None:
     key1 = b"rag:ret:tenant:abc"
     key2 = b"rag:ret:tenant:def"
     redis = _make_redis()
-    redis.smembers = AsyncMock(return_value={key1, key2})
+    redis.sscan_iter = _sscan_iter_returning(key1, key2)
     redis.delete = AsyncMock(return_value=3)
     cache = RAGCache(redis)
     deleted = await cache.invalidate_collection(TENANT_A, COLLECTION_ID)

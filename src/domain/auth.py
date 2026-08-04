@@ -4,7 +4,7 @@ Domain-level auth checks (require_collection_read/write, assert_tenant_owns_reso
 live here so RetrievalService and graph nodes can import them without crossing into src/api/.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID
 
 import structlog
@@ -31,6 +31,7 @@ class UserContext:
     permissions: frozenset[str]  # Permission codes (e.g., "documents:upload")
     allowed_collection_ids: frozenset[UUID]  # Collections readable by user
     writable_collection_ids: frozenset[UUID]  # Collections writable by user
+    realm_roles: frozenset[str] = field(default_factory=frozenset)  # JWT realm_access.roles
 
     def __post_init__(self) -> None:
         # Structural invariant: write access implies read access

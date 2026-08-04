@@ -20,7 +20,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies.auth import get_current_ctx, require_permission
+from src.api.dependencies.auth import get_current_ctx, require_realm_role
 from src.api.schemas.onboarding import (
     ActivationResultResponse,
     SessionStatusResponse,
@@ -32,18 +32,19 @@ from src.api.schemas.onboarding import (
     StepResultResponse,
 )
 from src.core.database import get_db_session
+from src.domain.audit_service import AuditService
 from src.domain.auth import UserContext
 from src.domain.onboarding_service import OnboardingService
 
 router = APIRouter(prefix="/api/v1/platform/onboarding", tags=["platform-onboarding"])
 
-_RequirePlatformAdmin = Annotated[None, Depends(require_permission("platform:admin"))]
+_RequirePlatformAdmin = Annotated[None, Depends(require_realm_role("platform:admin"))]
 _Ctx = Annotated[UserContext, Depends(get_current_ctx)]
 _Session = Annotated[AsyncSession, Depends(get_db_session)]
 
 
-def _svc(session: AsyncSession) -> OnboardingService:
-    return OnboardingService(session)
+def _svc(session: AsyncSession, caller_id: uuid.UUID | None = None) -> OnboardingService:
+    return OnboardingService(session, caller_id=caller_id)
 
 
 @router.post(
@@ -58,7 +59,7 @@ async def start_session(
     _: _RequirePlatformAdmin,
     session: _Session,
 ) -> SessionStatusResponse:
-    svc = _svc(session)
+    svc = _svc(session, caller_id=ctx.user_id)
     obj = await svc.create_session(
         platform_admin_id=ctx.user_id,
         tenant_name=body.tenant_name,
@@ -80,8 +81,9 @@ async def get_session(
     _: _RequirePlatformAdmin,
     session: _Session,
 ) -> SessionStatusResponse:
-    obj = await _svc(session).get_session(session_id)
-    return _svc(session)._session_to_status(obj)
+    svc = _svc(session, caller_id=ctx.user_id)
+    obj = await svc.get_session(session_id)
+    return svc._session_to_status(obj)
 
 
 @router.delete(
@@ -95,7 +97,7 @@ async def abandon_session(
     _: _RequirePlatformAdmin,
     session: _Session,
 ) -> None:
-    await _svc(session).abandon_session(session_id)
+    await _svc(session, caller_id=ctx.user_id).abandon_session(session_id)
     await session.commit()
 
 
@@ -111,7 +113,7 @@ async def step_1_tenant_config(
     _: _RequirePlatformAdmin,
     session: _Session,
 ) -> StepResultResponse:
-    result = await _svc(session).execute_step_1(session_id, body)
+    result = await _svc(session, caller_id=ctx.user_id).execute_step_1(session_id, body)
     await session.commit()
     return result
 
@@ -128,7 +130,7 @@ async def step_2_collections(
     _: _RequirePlatformAdmin,
     session: _Session,
 ) -> StepResultResponse:
-    result = await _svc(session).execute_step_2(session_id, body)
+    result = await _svc(session, caller_id=ctx.user_id).execute_step_2(session_id, body)
     await session.commit()
     return result
 
@@ -145,7 +147,7 @@ async def step_3_admin_user(
     _: _RequirePlatformAdmin,
     session: _Session,
 ) -> StepResultResponse:
-    result = await _svc(session).execute_step_3(session_id, body)
+    result = await _svc(session, caller_id=ctx.user_id).execute_step_3(session_id, body)
     await session.commit()
     return result
 
@@ -162,7 +164,7 @@ async def step_4_pipeline(
     _: _RequirePlatformAdmin,
     session: _Session,
 ) -> StepResultResponse:
-    result = await _svc(session).execute_step_4(session_id, body)
+    result = await _svc(session, caller_id=ctx.user_id).execute_step_4(session_id, body)
     await session.commit()
     return result
 
@@ -178,6 +180,17 @@ async def step_5_activate(
     _: _RequirePlatformAdmin,
     session: _Session,
 ) -> ActivationResultResponse:
-    result = await _svc(session).activate(session_id)
+    result = await _svc(session, caller_id=ctx.user_id).activate(session_id)
+    await AuditService(session).log(
+        ctx=ctx,
+        action="tenant.activated",
+        resource_type="tenant",
+        resource_id=result.tenant_id,
+        details={
+            "session_id": str(session_id),
+            "tenant_slug": result.tenant_slug,
+            "collections_created": result.collections_created,
+        },
+    )
     await session.commit()
     return result

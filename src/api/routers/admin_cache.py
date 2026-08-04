@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,7 @@ from src.api.dependencies.auth import get_current_ctx, require_permission
 from src.core.cache import _RESPONSE_PREFIX, _RETRIEVAL_PREFIX, get_rag_cache
 from src.core.clients.redis_client import get_redis_client
 from src.core.database import get_db_session
+from src.db.models.collection import Collection
 from src.domain.auth import UserContext
 
 router = APIRouter(tags=["admin-cache"])
@@ -82,7 +83,12 @@ async def invalidate_collection_cache(
     collection_id: uuid.UUID,
     ctx: _Ctx,
     _auth: _RequireAdmin,
+    session: _Session,
 ) -> Any:
+    # Verify the collection belongs to the caller's tenant before invalidating
+    col = await session.get(Collection, collection_id)
+    if col is None or col.tenant_id != ctx.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     cache = get_rag_cache()
     deleted = await cache.invalidate_collection(ctx.tenant_id, collection_id)
     return CacheInvalidateResponse(

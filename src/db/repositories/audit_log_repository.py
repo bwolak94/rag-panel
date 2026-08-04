@@ -74,7 +74,9 @@ class AuditLogRepository:
         if action:
             q = q.where(AuditLog.action == action)
         elif action_prefix:
-            q = q.where(AuditLog.action.like(f"{action_prefix}%"))
+            # Escape LIKE metacharacters so user input cannot widen the filter
+            _esc = action_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            q = q.where(AuditLog.action.like(f"{_esc}%", escape="\\"))
         if user_id:
             q = q.where(AuditLog.user_id == user_id)
         if resource_type:
@@ -116,7 +118,9 @@ class AuditLogRepository:
         if action:
             q = q.where(AuditLog.action == action)
         elif action_prefix:
-            q = q.where(AuditLog.action.like(f"{action_prefix}%"))
+            # Escape LIKE metacharacters so user input cannot widen the filter
+            _esc = action_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            q = q.where(AuditLog.action.like(f"{_esc}%", escape="\\"))
         if user_id:
             q = q.where(AuditLog.user_id == user_id)
         if resource_type:
