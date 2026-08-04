@@ -109,6 +109,43 @@ class ChatService:
         )
         db.add(user_msg)
 
+        # ── Response cache check (opt-in: pipeline.prompt_config.cache_responses) ──
+        prompt_cfg = pipeline.prompt_config or {}
+        cache_responses: bool = bool(prompt_cfg.get("cache_responses", False))
+        if cache_responses:
+            from src.core.cache import get_rag_cache
+
+            _cache = get_rag_cache()
+            cached = await _cache.get_response(ctx.tenant_id, pipeline.id, question)
+            if cached is not None:
+                cached_answer: str = cached.get("answer", "")
+                cached_citations = self._parse_citations(cached.get("citations", []))
+                message_id = uuid.uuid4()
+                assistant_msg = Message(
+                    id=message_id,
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content=cached_answer,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                )
+                db.add(assistant_msg)
+                await db.flush()
+                logger.info(
+                    "chat_completion.cache_hit",
+                    conversation_id=str(conversation.id),
+                    message_id=str(message_id),
+                    pipeline_id=str(pipeline.id),
+                )
+                return CompletionResult(
+                    message_id=message_id,
+                    answer=cached_answer,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    citations=cached_citations,
+                    no_results=False,
+                )
+
         # Load conversation history (last N messages) for context
         conversation_history = await self._load_conversation_history(
             db=db, conversation_id=conversation.id
@@ -159,6 +196,21 @@ class ChatService:
 
         # Convert citation dicts to MessageSourceOut schemas
         citations = self._parse_citations(citation_dicts)
+
+        # Store in response cache (only for non-research, cache-enabled pipelines)
+        if cache_responses and not research_mode and not no_results:
+            from src.core.cache import get_rag_cache
+
+            _cache = get_rag_cache()
+            cache_ttl: int = int(prompt_cfg.get("cache_ttl_seconds", 3600))
+            await _cache.set_response(
+                tenant_id=ctx.tenant_id,
+                pipeline_id=pipeline.id,
+                query=question,
+                answer=answer,
+                citations=citation_dicts,
+                ttl=cache_ttl,
+            )
 
         message_id = uuid.uuid4()
         assistant_msg = Message(
