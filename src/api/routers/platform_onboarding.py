@@ -18,6 +18,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies.auth import get_current_ctx, require_realm_role
@@ -37,6 +38,10 @@ from src.domain.auth import UserContext
 from src.domain.onboarding_service import OnboardingService
 
 router = APIRouter(prefix="/api/v1/platform/onboarding", tags=["platform-onboarding"])
+
+
+class CleanupResponse(BaseModel):
+    sessions_abandoned: int
 
 _RequirePlatformAdmin = Annotated[None, Depends(require_realm_role("platform:admin"))]
 _Ctx = Annotated[UserContext, Depends(get_current_ctx)]
@@ -194,3 +199,21 @@ async def step_5_activate(
     )
     await session.commit()
     return result
+
+
+@router.post(
+    "/sessions/cleanup",
+    response_model=CleanupResponse,
+    summary="Abandon all expired onboarding sessions",
+    description=(
+        "Marks every in-progress session whose `expires_at` is in the past as `abandoned`. "
+        "Intended to be called by a Kubernetes CronJob on a regular schedule."
+    ),
+)
+async def cleanup_expired_sessions(
+    _: _RequirePlatformAdmin,
+    session: _Session,
+) -> CleanupResponse:
+    count = await _svc(session).cleanup_expired_sessions()
+    await session.commit()
+    return CleanupResponse(sessions_abandoned=count)

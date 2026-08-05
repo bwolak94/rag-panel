@@ -127,3 +127,68 @@ Reguły izolacji:
 
 - Per user: 30 zapytań chat/min; per tenant: konfigurowalne (rejestr w Postgres, licznik w Redis).
 - Upload: max 100 MB/plik (MVP), max 20 równoległych jobów ingestu per tenant.
+
+## 10. Onboarding platformy (platform:admin)
+
+Wizard 5-krokowy do tworzenia nowych tenantów. Wszystkie endpointy wymagają roli realm `platform:admin`.
+Prefiks: `/api/v1/platform/onboarding`.
+
+| Metoda | Ścieżka | Opis |
+|---|---|---|
+| POST | `/sessions` | Rozpocznij nową sesję onboardingu; zwraca `SessionStatusResponse` (201) |
+| GET | `/sessions/{id}` | Status sesji onboardingu |
+| DELETE | `/sessions/{id}` | Porzuć sesję (status → `abandoned`); 204 |
+| POST | `/sessions/{id}/steps/1` | Krok 1 — konfiguracja tenanta (nazwa, slug, ustawienia, limity) |
+| POST | `/sessions/{id}/steps/2` | Krok 2 — kolekcje wiedzy (strategia chunkingu, model embeddingów) |
+| POST | `/sessions/{id}/steps/3` | Krok 3 — przypisz pierwszego admina tenanta (keycloak_user_id, rola) |
+| POST | `/sessions/{id}/steps/4` | Krok 4 — skonfiguruj domyślny pipeline RAG (top_k, guardrails, cache) |
+| POST | `/sessions/{id}/steps/5` | Krok 5 — aktywuj tenanta; nieodwracalne; wpis audit `tenant.activated` |
+| POST | `/sessions/cleanup` | Oznacz wygasłe sesje (status `in_progress`, `expires_at` < now) jako `abandoned`; zwraca `{"sessions_abandoned": <count>}`; wywoływane przez Kubernetes CronJob |
+
+### Schematy odpowiedzi onboardingu
+
+`SessionStatusResponse`: `session_id`, `tenant_id`, `status` (`in_progress`/`completed`/`abandoned`), `current_step`, `steps_total=5`, `steps_completed: {str: bool}`, `expires_at`, `next_step_url`.
+
+`StepResultResponse`: `session_id`, `step_completed`, `next_step`, `message`.
+
+`ActivationResultResponse`: `tenant_id`, `tenant_slug`, `collections_created`, `pipeline_created`, `admin_user_assigned`, `activated_at`.
+
+## 11. Admin — cache (TASK-030)
+
+Statystyki i invalidacja Redis cache dla retrievalu i odpowiedzi RAG. Wymagane uprawnienie: `admin:analytics`. `tenant_id` zawsze z JWT — admin nie widzi cache innych tenantów.
+Prefiks: `/api/v1/admin/cache`.
+
+| Metoda | Ścieżka | Opis |
+|---|---|---|
+| GET | `/stats` | Liczba kluczy w retrieval cache i response cache dla tenanta. Zwraca `{tenant_id, retrieval_cache_keys, response_cache_keys}`. |
+| DELETE | `/invalidate/{collection_id}` | Wymuś invalidację retrieval cache dla kolekcji. Weryfikuje, że kolekcja należy do tenanta (404 jeśli nie). Zwraca `{collection_id, keys_deleted}`. |
+
+## 12. Admin — audit log viewer (TASK-031)
+
+Przeglądarka zdarzeń audytowych z filtrowaniem, paginacją kursorową i eksportem CSV. Wymagane uprawnienie: `admin:audit_log`.
+`tenant_id` zawsze z JWT — brak dostępu między tenantami.
+Prefiks: `/api/v1/admin/audit-log`.
+
+| Metoda | Ścieżka | Parametry query | Opis |
+|---|---|---|---|
+| GET | `/audit-log` | `action`, `action_prefix`, `user_id`, `resource_type`, `resource_id`, `from_date`, `to_date`, `cursor`, `page_size` (1–200, domyślnie 50) | Lista zdarzeń z filtrowaniem i paginacją kursorową. |
+| GET | `/audit-log/export` | j.w. bez `cursor`/`page_size` | Streaming CSV (max 10 000 wierszy). Sam eksport jest logowany jako zdarzenie audit `audit_log.exported`. |
+| GET | `/audit-log/actions` | — | Distinct typy akcji dla tenanta (do dropdownu w UI). |
+
+### Schemat `AuditLogItem`
+
+```json
+{
+  "id": "uuid",
+  "user_id": "uuid | null",
+  "user_display_name": "string | null",
+  "action": "string",
+  "resource_type": "string | null",
+  "resource_id": "uuid | null",
+  "details": "object",
+  "ip_address": "string | null",
+  "created_at": "datetime"
+}
+```
+
+Odpowiedź listowa: `{items: AuditLogItem[], total_count: int, next_cursor: string | null, has_next_page: bool}`.

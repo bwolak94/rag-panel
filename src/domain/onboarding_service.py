@@ -19,6 +19,7 @@ from typing import Any
 
 import structlog
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.exceptions import ConflictError, DomainValidationError, NotFoundError
@@ -334,6 +335,26 @@ class OnboardingService:
             admin_user_assigned=bool(obj.steps_completed.get("3")),
             activated_at=now,
         )
+
+    # ── Maintenance ───────────────────────────────────────────────────────────
+
+    async def cleanup_expired_sessions(self) -> int:
+        """Mark all in-progress sessions that have passed their expiry as abandoned.
+
+        Returns the number of sessions updated. The caller (router) owns the commit.
+        """
+        now = _utcnow()
+        cursor: CursorResult[Any] = await self._session.execute(  # type: ignore[assignment]
+            update(OnboardingSession)
+            .where(
+                OnboardingSession.status == "in_progress",
+                OnboardingSession.expires_at < now,
+            )
+            .values(status="abandoned", updated_at=now)
+        )
+        count: int = cursor.rowcount
+        logger.info("onboarding_sessions.cleanup", sessions_abandoned=count)
+        return count
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
