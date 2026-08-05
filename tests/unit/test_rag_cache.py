@@ -26,7 +26,7 @@ async def _empty_async_iter(*_args: object, **_kwargs: object) -> object:
     yield  # type: ignore[misc]  # unreachable, but required to make this a generator
 
 
-def _sscan_iter_returning(*items: bytes):
+def _sscan_iter_returning(*items: bytes) -> object:
     """Return an async generator that yields the given items."""
 
     async def _gen(*_args: object, **_kwargs: object) -> object:
