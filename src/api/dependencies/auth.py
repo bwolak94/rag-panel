@@ -81,9 +81,7 @@ async def get_current_ctx(
     tenant_id_str: str | None = claims.get("tenant_id")
     email: str = claims.get("email", "")
     display_name: str = claims.get("name", "")
-    realm_roles: frozenset[str] = frozenset(
-        claims.get("realm_access", {}).get("roles", [])
-    )
+    realm_roles: frozenset[str] = frozenset(claims.get("realm_access", {}).get("roles", []))
 
     if not tenant_id_str:
         raise HTTPException(

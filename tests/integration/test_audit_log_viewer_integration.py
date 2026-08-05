@@ -94,10 +94,7 @@ async def pg_engine(pg_dsn: str) -> Any:
 
         # Create a default partition so that any created_at value is accepted.
         await conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS audit_log_default "
-                "PARTITION OF audit_log DEFAULT"
-            )
+            text("CREATE TABLE IF NOT EXISTS audit_log_default PARTITION OF audit_log DEFAULT")
         )
 
         # Seed the two tenants needed across all tests.
@@ -358,12 +355,8 @@ async def test_csv_export_tenant_isolation(db_session: AsyncSession) -> None:
     import csv
     import io
 
-    await _insert_log_row(
-        db_session, tenant_id=TENANT_A_ID, action="export.tenant_a"
-    )
-    await _insert_log_row(
-        db_session, tenant_id=TENANT_B_ID, action="export.tenant_b"
-    )
+    await _insert_log_row(db_session, tenant_id=TENANT_A_ID, action="export.tenant_a")
+    await _insert_log_row(db_session, tenant_id=TENANT_B_ID, action="export.tenant_b")
 
     svc = AuditLogViewerService(db_session)
     audit_stub = AsyncMock()

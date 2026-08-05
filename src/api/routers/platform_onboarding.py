@@ -43,6 +43,7 @@ router = APIRouter(prefix="/api/v1/platform/onboarding", tags=["platform-onboard
 class CleanupResponse(BaseModel):
     sessions_abandoned: int
 
+
 _RequirePlatformAdmin = Annotated[None, Depends(require_realm_role("platform:admin"))]
 _Ctx = Annotated[UserContext, Depends(get_current_ctx)]
 _Session = Annotated[AsyncSession, Depends(get_db_session)]

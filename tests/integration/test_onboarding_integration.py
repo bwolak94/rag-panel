@@ -99,10 +99,7 @@ async def pg_engine(pg_dsn: str) -> Any:
 
         # audit_log is RANGE-partitioned — create a default partition
         await conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS audit_log_default "
-                "PARTITION OF audit_log DEFAULT"
-            )
+            text("CREATE TABLE IF NOT EXISTS audit_log_default PARTITION OF audit_log DEFAULT")
         )
 
         # Seed a system-wide embedding model (tenant_id NULL = available to all tenants).
@@ -352,9 +349,7 @@ async def test_step_2_idempotency_no_duplicate_collections(
         Collection.name == "Protocols",
     )
     rows = (await db_session.execute(count_q)).scalars().all()
-    assert len(rows) == 1, (
-        f"Expected exactly 1 collection named 'Protocols', found {len(rows)}"
-    )
+    assert len(rows) == 1, f"Expected exactly 1 collection named 'Protocols', found {len(rows)}"
 
 
 @pytest.mark.integration
