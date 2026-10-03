@@ -51,6 +51,10 @@ src/db/migrations/versions/__pycache__/
 # Docker
 *.log
 
+# Claude Code
+.claude/
+tasks/
+
 # Secrets — NEVER commit these
 *.pem
 *.key
