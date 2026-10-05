@@ -11,6 +11,13 @@ from langgraph.graph import END
 from src.graphs.ingest_graph.state import IngestState
 
 
+def route_after_extract(state: IngestState) -> str:
+    """Route to node_ocr when extraction was sparse; otherwise → node_dedupe."""
+    if state.needs_ocr:
+        return "node_ocr"
+    return "node_dedupe"
+
+
 def route_after_dedupe(state: IngestState) -> str:
     """Halt on duplicate (state.halt=True) → END; otherwise → node_validate."""
     if state.halt:

@@ -9,6 +9,11 @@ Graph topology — standard (fixed — change requires ADR):
     node_fetch → node_extract → node_dedupe →[cond]→ node_validate →[cond]→ node_pii_scan
     →[cond]→ node_chunk → node_embed → node_upsert → node_persist → END
 
+Graph topology — with OCR (opt-in via chunk_config.ocr_enabled, triggered by sparse extraction):
+    node_fetch → node_extract →[cond]→ node_ocr → node_dedupe →[cond]→ node_validate
+    →[cond]→ node_pii_scan →[cond]→ node_chunk → node_embed → node_upsert → node_persist → END
+    (when needs_ocr=False the conditional edge skips node_ocr and goes directly to node_dedupe)
+
 Graph topology — with Vision extraction (opt-in via chunk_config.vision_extraction_enabled):
     node_fetch → node_extract → node_dedupe →[cond]→ node_validate →[cond]→ node_pii_scan
     →[cond]→ node_chunk → node_extract_vision → node_embed → node_upsert → node_persist → END
@@ -44,6 +49,7 @@ from src.db.models.ingestion_job import IngestionJob
 from src.graphs.ingest_graph import nodes
 from src.graphs.ingest_graph.routing import (
     route_after_dedupe,
+    route_after_extract,
     route_after_pii,
     route_after_semantic_dedup,
     route_after_validate,
@@ -78,6 +84,7 @@ def build_ingest_graph(
     graph_rag_enabled: bool = False,
     vision_extraction_enabled: bool = False,
     semantic_dedup_enabled: bool = False,
+    ocr_enabled: bool = False,
 ) -> Any:
     """Compile and return the ingest StateGraph.
 
@@ -100,6 +107,13 @@ def build_ingest_graph(
                                 cosine similarity on mean-pooled chunk embeddings.
                                 Controlled by collection.chunk_config["semantic_dedup_enabled"].
                                 Defaults to False (standard pipeline).
+        ocr_enabled: When True, registers node_ocr in the graph and wires a conditional
+                     edge from node_extract so that image-only documents are routed through
+                     OCR before deduplication.  node_ocr itself also checks
+                     collection.chunk_config["ocr_enabled"] at runtime and short-circuits
+                     when disabled there.
+                     Controlled by collection.chunk_config["ocr_enabled"].
+                     Defaults to False (standard pipeline).
 
     Returns:
         Compiled LangGraph CompiledStateGraph.
@@ -120,7 +134,18 @@ def build_ingest_graph(
 
     builder.set_entry_point("node_fetch")
     builder.add_edge("node_fetch", "node_extract")
-    builder.add_edge("node_extract", "node_dedupe")
+
+    # Wire node_extract → node_ocr (conditional) or directly to node_dedupe.
+    if ocr_enabled:
+        builder.add_node("node_ocr", nodes.node_ocr)  # type: ignore[call-overload]
+        builder.add_conditional_edges(
+            "node_extract",
+            route_after_extract,
+            {"node_ocr": "node_ocr", "node_dedupe": "node_dedupe"},
+        )
+        builder.add_edge("node_ocr", "node_dedupe")
+    else:
+        builder.add_edge("node_extract", "node_dedupe")
 
     builder.add_conditional_edges(
         "node_dedupe",
@@ -192,10 +217,11 @@ def build_ingest_graph(
 async def _resolve_pipeline_flags(
     session: AsyncSession,
     collection_id: uuid.UUID,
-) -> tuple[bool, bool, bool]:
+) -> tuple[bool, bool, bool, bool]:
     """Read opt-in feature flags from collection.chunk_config.
 
-    Returns (graph_rag_enabled, vision_extraction_enabled, semantic_dedup_enabled).
+    Returns (graph_rag_enabled, vision_extraction_enabled, semantic_dedup_enabled,
+             ocr_enabled).
     All default to False when the collection is not found or the flag is absent/falsy.
     """
     from sqlalchemy import select
@@ -205,12 +231,13 @@ async def _resolve_pipeline_flags(
     result = await session.execute(select(Collection).where(Collection.id == collection_id))
     collection = result.scalar_one_or_none()
     if collection is None:
-        return False, False, False
+        return False, False, False, False
     chunk_config: dict[str, Any] = collection.chunk_config or {}
     return (
         bool(chunk_config.get("graph_rag_enabled", False)),
         bool(chunk_config.get("vision_extraction_enabled", False)),
         bool(chunk_config.get("semantic_dedup_enabled", False)),
+        bool(chunk_config.get("ocr_enabled", False)),
     )
 
 
@@ -243,11 +270,13 @@ async def run_ingest_graph(
         graph_rag_enabled,
         vision_extraction_enabled,
         semantic_dedup_enabled,
+        ocr_enabled,
     ) = await _resolve_pipeline_flags(session, event.collection_id)
     graph = build_ingest_graph(
         graph_rag_enabled=graph_rag_enabled,
         vision_extraction_enabled=vision_extraction_enabled,
         semantic_dedup_enabled=semantic_dedup_enabled,
+        ocr_enabled=ocr_enabled,
     )
 
     initial_state = IngestState(

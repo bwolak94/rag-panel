@@ -47,6 +47,19 @@ _SUPPORTED_MIMES = frozenset(
 
 _TEXT_MIMES = frozenset(["text/plain", "text/markdown"])
 
+# MIME types eligible for OCR fallback when extracted text is sparse.
+_OCR_ELIGIBLE_MIMES = frozenset(
+    [
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/tiff",
+    ]
+)
+
+# Chars-per-page threshold below which OCR is triggered.
+_OCR_CHARS_PER_PAGE_THRESHOLD = 50
+
 
 def _extract_with_docling(raw: bytes, mime: str) -> tuple[str, list[Section]]:
     """Run Docling synchronously (called from executor)."""
@@ -137,6 +150,15 @@ async def node_extract(state: IngestState, config: dict[str, Any]) -> dict[str, 
         word_count = len(full_text.split())
         page_set = {s.page for s in sections if s.page is not None}
 
+        # Detect sparse extraction: if fewer than _OCR_CHARS_PER_PAGE_THRESHOLD chars per
+        # page (for OCR-eligible MIME types), flag for OCR. Text/MD files are never flagged.
+        needs_ocr = False
+        if mime in _OCR_ELIGIBLE_MIMES:
+            page_count = len(page_set) if page_set else 1
+            chars_per_page = len(full_text.strip()) / page_count
+            if chars_per_page < _OCR_CHARS_PER_PAGE_THRESHOLD:
+                needs_ocr = True
+
         # Save extracted.json to MinIO processed/ prefix (for debugging, not public)
         if minio is not None:
             extracted_data = json.dumps(
@@ -174,6 +196,7 @@ async def node_extract(state: IngestState, config: dict[str, Any]) -> dict[str, 
                 "page_count": len(page_set),
                 "word_count": word_count,
                 "section_count": len(sections),
+                "needs_ocr": needs_ocr,
                 "latency_ms": elapsed,
             },
         )
@@ -185,6 +208,7 @@ async def node_extract(state: IngestState, config: dict[str, Any]) -> dict[str, 
                 "page_count": len(page_set),
                 "section_count": len(sections),
                 "word_count": word_count,
+                "needs_ocr": needs_ocr,
                 "latency_ms": elapsed,
             }
         )
@@ -193,8 +217,13 @@ async def node_extract(state: IngestState, config: dict[str, Any]) -> dict[str, 
             document_id=str(state.document_id),
             section_count=len(sections),
             word_count=word_count,
+            needs_ocr=needs_ocr,
         )
-        return {"extracted_text": full_text, "extracted_sections": sections}
+        return {
+            "extracted_text": full_text,
+            "extracted_sections": sections,
+            "needs_ocr": needs_ocr,
+        }
 
     except IngestNodeError as exc:
         _lf_update_span(

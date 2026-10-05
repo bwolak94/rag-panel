@@ -66,8 +66,11 @@ async def node_validate(state: IngestState, config: dict[str, Any]) -> dict[str,
         validation_config = collection.validation_config or {}
         confidence_threshold = validation_config.get("confidence_threshold", 0.7)  # noqa: F841
 
-        # Sample first 2000 words — avoid excessive token usage
-        sample_text = " ".join((state.extracted_text or "").split()[:2000])
+        # Sample first 2000 words — use OCR output when available (image-only docs),
+        # otherwise fall back to the normal extracted text.
+        # SECURITY: neither ocr_text nor extracted_text must appear in logs.
+        effective_text = state.ocr_text or state.extracted_text or ""
+        sample_text = " ".join(effective_text.split()[:2000])
 
         prompt_template = _load_prompt()
 
