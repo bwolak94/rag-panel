@@ -38,6 +38,14 @@ from src.graphs.ingest_graph.state import IngestState
 
 logger = structlog.get_logger(__name__)
 
+# Module-level executor shared across all invocations.
+# Using ProcessPoolExecutor because pdf2image + pytesseract are CPU-bound
+# and must not compete with the async event loop under the GIL.
+# Max 2 workers: OCR is memory-intensive; more workers risk OOM on typical hosts.
+# Inject a different executor via config["ocr_executor"] (e.g., None for tests
+# which use the default ThreadPoolExecutor so mocks remain picklable).
+_OCR_EXECUTOR: ProcessPoolExecutor = ProcessPoolExecutor(max_workers=2)
+
 _DEFAULT_OCR_LANG = "pol+eng"
 
 
@@ -62,8 +70,8 @@ def _rasterise_pdf(raw: bytes, dpi: int = 300) -> list[Any]:
     """
     from pdf2image import convert_from_bytes  # type: ignore[import-not-found]
 
-    images = convert_from_bytes(raw, dpi=dpi)
-    return images  # type: ignore[return-value]
+    images: list[Any] = convert_from_bytes(raw, dpi=dpi)
+    return images
 
 
 def _ocr_image(image: Any, lang: str) -> str:
@@ -167,6 +175,9 @@ async def node_ocr(state: IngestState, config: dict[str, Any]) -> dict[str, Any]
     cfg = config.get("configurable", {})
     session: AsyncSession = cfg["db"]
     minio = cfg.get("minio")
+    # Allow tests to inject None (→ default thread pool, mocks are picklable) or
+    # a custom executor. Production always uses the module-level ProcessPoolExecutor.
+    executor = cfg.get("ocr_executor", _OCR_EXECUTOR)
     step_start = utcnow()
 
     try:
@@ -190,9 +201,9 @@ async def node_ocr(state: IngestState, config: dict[str, Any]) -> dict[str, Any]
             if minio is None:
                 raise IngestNodeError("raw_bytes is None and no minio client in config")
 
-            loop = asyncio.get_running_loop()
+            # Bucket convention in ingest nodes: tenant-{uuid} (consistent with node_fetch).
             bucket = f"tenant-{state.tenant_id}"
-            raw_bytes = await loop.run_in_executor(
+            raw_bytes = await asyncio.get_running_loop().run_in_executor(
                 None, _fetch_from_minio, minio, bucket, state.minio_key
             )
             logger.info(
@@ -206,22 +217,18 @@ async def node_ocr(state: IngestState, config: dict[str, Any]) -> dict[str, Any]
         # DB round-trip when mime is already known from prior nodes.
         is_pdf = raw_bytes[:4] == b"%PDF"
 
-        # --- Run OCR in ProcessPoolExecutor ---------------------------------
-        # ProcessPoolExecutor is required: pdf2image + pytesseract are CPU-bound
-        # and must NOT run in the default ThreadPoolExecutor (GIL does not help).
+        # --- Run OCR in executor --------------------------------------------
+        # Production: module-level ProcessPoolExecutor (CPU-bound isolation).
+        # Tests: executor=None → default ThreadPoolExecutor → MagicMock picklable.
         loop = asyncio.get_running_loop()
-        executor = ProcessPoolExecutor(max_workers=1)
-        try:
-            if is_pdf:
-                ocr_text, page_count = await loop.run_in_executor(
-                    executor, _ocr_pdf_bytes, raw_bytes, ocr_lang, 300
-                )
-            else:
-                ocr_text, page_count = await loop.run_in_executor(
-                    executor, _ocr_image_bytes, raw_bytes, ocr_lang
-                )
-        finally:
-            executor.shutdown(wait=False)
+        if is_pdf:
+            ocr_text, page_count = await loop.run_in_executor(
+                executor, _ocr_pdf_bytes, raw_bytes, ocr_lang, 300
+            )
+        else:
+            ocr_text, page_count = await loop.run_in_executor(
+                executor, _ocr_image_bytes, raw_bytes, ocr_lang
+            )
 
         # --- Audit trail (NO text content) ----------------------------------
         elapsed = _elapsed_ms(step_start)

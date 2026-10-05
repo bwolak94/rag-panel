@@ -54,7 +54,8 @@ def _make_session(collection: MagicMock) -> AsyncMock:
 
 
 def _make_config(session: AsyncMock, minio: MagicMock | None = None) -> dict:
-    return {"configurable": {"db": session, "minio": minio}}
+    # ocr_executor=None → default ThreadPoolExecutor → MagicMock remains picklable in tests.
+    return {"configurable": {"db": session, "minio": minio, "ocr_executor": None}}
 
 
 # ---------------------------------------------------------------------------
@@ -189,9 +190,11 @@ async def test_node_ocr_raises_ingest_node_error_on_failure() -> None:
     state = _make_state(raw_bytes=_PDF_HEADER, needs_ocr=True)
     config = _make_config(session)
 
-    with patch(
-        "src.graphs.ingest_graph.nodes.node_ocr._ocr_pdf_bytes",
-        side_effect=RuntimeError("poppler not found"),
+    with (
+        patch(
+            "src.graphs.ingest_graph.nodes.node_ocr._ocr_pdf_bytes",
+            side_effect=RuntimeError("poppler not found"),
+        ),
+        pytest.raises(IngestNodeError, match="ocr_error"),
     ):
-        with pytest.raises(IngestNodeError, match="ocr_error"):
-            await node_ocr(state, config)
+        await node_ocr(state, config)
