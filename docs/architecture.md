@@ -454,8 +454,10 @@ class QueryState(BaseModel):
 graph TD
     A[Event: ObjectCreated] --> B[fetch_from_minio]
     B --> C[extract_text<br/>Docling: layout-aware parsing]
-    C -->|scan without text layer| C2[OCR - Phase 3 / reject in MVP]
-    C --> D[dedupe_check<br/>SHA-256 hash + semantic similarity]
+    C --> OCR_CHECK{sparse text?<br/>< 50 chars/page}
+    OCR_CHECK -->|yes, needs_ocr=True| C2[node_ocr<br/>Tesseract 5.x via ProcessPoolExecutor<br/>ocr_lang from collection config]
+    OCR_CHECK -->|no| D
+    C2 --> D[dedupe_check<br/>SHA-256 hash + semantic similarity]
     D -->|duplicate| X[status: rejected_duplicate]
     D --> E[llm_validate<br/>classify category, quality, type]
     E --> F[pii_scan<br/>detect sensitive data]
@@ -487,6 +489,11 @@ class IngestGraphState(TypedDict):
     status: DocumentStatus
     error: str | None
     retry_count: int
+    # OCR fields (ADR-028)
+    needs_ocr: bool  # True when extract_text detects < 50 chars/page
+    ocr_text: str | None  # populated by node_ocr; merged into extracted_text
+    ocr_engine: str | None  # e.g. "tesseract"
+    ocr_page_count: int  # number of pages OCR-processed
 ```
 
 ### Node Contracts
@@ -494,7 +501,8 @@ class IngestGraphState(TypedDict):
 | Node | Input from state | Output to state | External calls |
 |---|---|---|---|
 | `fetch_from_minio` | minio_key | raw_bytes | MinIO |
-| `extract_text` | raw_bytes | extracted_text, extracted_sections | Docling (local) |
+| `extract_text` | raw_bytes | extracted_text, extracted_sections, needs_ocr | Docling (local) |
+| `node_ocr` | raw_bytes, needs_ocr, collection.ocr_lang | ocr_text, ocr_engine, ocr_page_count; merges into extracted_text | Tesseract (ProcessPoolExecutor) |
 | `dedupe_check` | sha256, tenant_id | status (rejected_duplicate or continue) | Postgres |
 | `llm_validate` | extracted_text (sample) | validation_result | LLM |
 | `pii_scan` | extracted_text | validation_result.pii_flags, status | Rule-based + optional LLM |
@@ -2409,3 +2417,78 @@ query → [dense encoder] → Qdrant dense search (top_k)
 - `node_upsert` adds ~10-50ms per ingest batch for sparse encoding (CPU-bound, pooled).
 
 **Agents:** `rag-engineer` (implementation), `python-reviewer` (code review — no blockers), `security-auditor` (tenant isolation audit — no blockers).
+
+---
+
+### ADR-028: OCR Support for Scanned Documents in Ingest Graph (TASK-018)
+
+**Date:** 2026-10-05
+**Status:** Accepted
+**Deciders:** architect, rag-engineer, backend-dev
+
+**Context:**
+
+Medical clinics routinely scan paper documents (referrals, handwritten notes, older protocols) into image-only PDFs. The current ingest pipeline relies on Docling for text extraction (`node_extract`), which yields near-empty output for these scans. Such documents are either rejected as low-quality by `node_validate` or produce empty chunks that pollute the vector store. This blocks a core pilot use case (FR-2 in the PRD).
+
+OCR is CPU-intensive (seconds per page at 300 DPI). It must not block the async event loop and must not run unnecessarily on documents that already have a valid text layer.
+
+**Decision:**
+
+1. **New conditional node `node_ocr`** inserted between `node_extract` and `node_dedupe`. The routing is conditional: `node_extract` sets `state.needs_ocr = True` when the extracted text averages fewer than 50 characters per page (the sparse-text heuristic). When `needs_ocr` is False, the edge skips directly to `node_dedupe` with zero overhead.
+
+2. **OCR engine: `pytesseract` wrapping Tesseract 5.x** with Polish and English language packs (`pol+eng`). PDF pages are rasterized to images at 300 DPI via `pdf2image` (poppler backend). This combination is mature, fully on-prem (no cloud API calls), and handles Polish medical vocabulary adequately.
+
+3. **ProcessPoolExecutor for OCR execution.** Tesseract is CPU-bound and GIL-releasing. Running it in `ProcessPoolExecutor` (not `ThreadPoolExecutor`) isolates CPU load from the async event loop and prevents a single large scan from starving other ingest tasks. The executor is bounded (max_workers from settings, default 2).
+
+4. **Collection-level configuration.** Two new fields in `collections.chunk_config` (JSONB):
+   - `ocr_enabled: bool` (default `True`) -- allows tenants to disable OCR for collections that should never contain scans.
+   - `ocr_lang: str` (default `"pol+eng"`) -- Tesseract language string, configurable per collection.
+   These are NOT separate DB columns; they live inside the existing `chunk_config` JSONB to avoid schema proliferation. Alembic migration is not required.
+
+5. **OCR output is untrusted.** The same prompt injection guardrails that apply to normal extracted text apply to `ocr_text`. The OCR text is merged into `state.extracted_text` before `node_dedupe`, so all downstream nodes (validate, pii_scan, chunk) treat it identically to Docling output. `ocr_text` must never appear in application logs (GDPR).
+
+6. **State extension.** `IngestState` gains four fields: `needs_ocr: bool`, `ocr_text: str | None`, `ocr_engine: str | None`, `ocr_page_count: int`. All default to falsy values -- no impact on existing pipelines.
+
+7. **Graph topology update.** The build_ingest_graph() function gains an `ocr_enabled: bool` parameter (read from `chunk_config` alongside the existing flags). When True, `node_ocr` is registered and a conditional edge `route_after_extract` routes to either `node_ocr` or `node_dedupe` based on `state.needs_ocr`. When `ocr_enabled` is False, the edge is a direct `node_extract -> node_dedupe` (current behavior, no node registered).
+
+**Updated ingest graph topology (with OCR enabled):**
+```
+node_fetch -> node_extract ->[cond: needs_ocr]-> node_ocr -> node_dedupe ->[cond]-> ...
+                            ->[cond: !needs_ocr]->            node_dedupe ->[cond]-> ...
+```
+
+**Alternatives considered:**
+
+- **Docling built-in OCR engine:** Docling has experimental OCR support but requires `easyocr` or `rapidocr`, adding large transitive dependencies (PyTorch). Tesseract is lighter-weight and sufficient for typed/printed Polish medical text. Revisit if Docling OCR matures and handwriting recognition is needed.
+- **OCR as a pre-processing step before the graph:** Simpler but wasteful -- every document would be rasterized regardless of whether it needs OCR. The conditional node avoids this overhead.
+- **GPU-accelerated OCR (PaddleOCR, EasyOCR):** Better accuracy on handwriting but requires GPU allocation and large model downloads. Deferred to Phase 4; Tesseract handles the 90% case (typed/printed scans) now.
+- **Separate microservice for OCR:** Over-engineered for MVP. The ProcessPoolExecutor approach keeps OCR co-located with the ingest worker. If OCR load justifies it, the node can be extracted into a separate service later without changing the graph topology.
+- **`ocr_enabled` / `ocr_lang` as dedicated DB columns:** Rejected to avoid migration churn. `chunk_config` JSONB already holds per-collection pipeline flags (graph_rag_enabled, vision_extraction_enabled, semantic_dedup_enabled). OCR config follows the same pattern.
+
+**Consequences:**
+
+- New runtime dependencies: `pytesseract`, `pdf2image`. System-level dependencies: `tesseract-ocr`, `tesseract-ocr-pol`, `poppler-utils` (must be added to the Dockerfile).
+- Dockerfile must install Tesseract 5.x + language packs (`apt-get install tesseract-ocr tesseract-ocr-pol tesseract-ocr-eng poppler-utils`). Image size increases by ~80 MB.
+- ProcessPoolExecutor adds memory overhead (one Python subprocess per worker). Default max_workers=2 bounds this.
+- The 50-chars/page heuristic may misclassify some documents (e.g., a PDF with only a title page). This is acceptable: OCR on a text-rich page is a no-op in practice (Tesseract returns equivalent text). The heuristic can be tuned later without topology changes.
+- Langfuse tracing: `node_ocr` gets an `@observe` span recording duration, page count, engine, and language -- never OCR text content (GDPR).
+- No impact on existing pipelines when `ocr_enabled` is absent from `chunk_config` (defaults to True, but `needs_ocr` defaults to False -- OCR only fires when `node_extract` explicitly flags sparse text).
+
+**Files to create/modify:**
+
+| File | Action | Owner |
+|---|---|---|
+| `src/graphs/ingest_graph/nodes/node_ocr.py` | Create -- OCR node implementation | rag-engineer |
+| `src/graphs/ingest_graph/state.py` | Add `needs_ocr`, `ocr_text`, `ocr_engine`, `ocr_page_count` fields | rag-engineer |
+| `src/graphs/ingest_graph/nodes/node_extract.py` | Add sparse-text heuristic, set `needs_ocr=True` | rag-engineer |
+| `src/graphs/ingest_graph/routing.py` | Add `route_after_extract()` function | rag-engineer |
+| `src/graphs/ingest_graph/graph.py` | Add `ocr_enabled` param, register node, conditional edge | rag-engineer |
+| `src/graphs/ingest_graph/__init__.py` | Export `node_ocr` | rag-engineer |
+| `Dockerfile` | Install tesseract-ocr, tesseract-ocr-pol, poppler-utils | backend-dev |
+| `pyproject.toml` | Add `pytesseract`, `pdf2image` dependencies | backend-dev |
+| `tests/unit/ingest_graph/test_node_ocr.py` | Unit tests for OCR node | rag-engineer |
+| `tests/unit/ingest_graph/test_routing_ocr.py` | Routing tests for conditional OCR edge | rag-engineer |
+| `tests/integration/test_ingest_ocr.py` | End-to-end: scanned PDF -> status=ready | backend-dev |
+| `docs/architecture.md` | Topology diagram, node contracts, this ADR | architect |
+
+**Agents:** `rag-engineer` (node implementation, state changes, routing, unit tests), `backend-dev` (Dockerfile, dependencies, integration test), `security-auditor` (verify OCR text treated as untrusted, no log leakage).

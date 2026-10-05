@@ -7,6 +7,7 @@ from src.graphs.ingest_graph.nodes.node_extract import node_extract
 from src.graphs.ingest_graph.nodes.node_extract_entities import node_extract_entities
 from src.graphs.ingest_graph.nodes.node_extract_vision import node_extract_vision
 from src.graphs.ingest_graph.nodes.node_fetch import node_fetch
+from src.graphs.ingest_graph.nodes.node_ocr import node_ocr
 from src.graphs.ingest_graph.nodes.node_persist import node_persist
 from src.graphs.ingest_graph.nodes.node_pii_scan import node_pii_scan
 from src.graphs.ingest_graph.nodes.node_semantic_dedup import node_semantic_dedup
@@ -16,6 +17,7 @@ from src.graphs.ingest_graph.nodes.node_validate import node_validate
 __all__ = [
     "node_fetch",
     "node_extract",
+    "node_ocr",
     "node_dedupe",
     "node_validate",
     "node_pii_scan",

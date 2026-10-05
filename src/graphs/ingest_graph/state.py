@@ -87,6 +87,13 @@ class IngestState(BaseModel):
     # 0 when vision_extraction_enabled=False or no image/table sections were present.
     vision_chunks_count: int = 0
 
+    # OCR — set by node_extract (needs_ocr flag) and node_ocr (results).
+    # GDPR: ocr_text is derived document content — never log it.
+    needs_ocr: bool = False
+    ocr_text: str | None = None  # GDPR: never log content
+    ocr_engine: str | None = None
+    ocr_page_count: int = 0
+
     # Semantic dedup — set by node_semantic_dedup (TASK-029)
     dedup_similarity: float | None = None  # cosine similarity to most similar doc
     dedup_similar_doc_id: UUID | None = None  # UUID of most similar existing document
