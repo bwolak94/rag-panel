@@ -119,7 +119,7 @@ def _ocr_image_bytes(raw: bytes, lang: str) -> tuple[str, int]:
     Returns:
         Tuple of (extracted_text, page_count=1).
     """
-    from PIL import Image  # type: ignore[import-not-found]
+    from PIL import Image
 
     image = Image.open(io.BytesIO(raw))
     text = _ocr_image(image, lang)
