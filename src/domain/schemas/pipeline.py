@@ -6,7 +6,26 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+class ABTestConfig(BaseModel):
+    """Configuration for shadow-mode prompt A/B testing."""
+
+    enabled: bool = False
+    shadow_prompt_version: str = Field(default="", min_length=0, max_length=32)
+    traffic_split: float = Field(default=0.1, ge=0.0, le=1.0)
+    experiment_id: str = Field(default="", min_length=0, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_enabled_requires_fields(self) -> ABTestConfig:
+        """Require non-empty shadow_prompt_version and experiment_id when enabled=True."""
+        if self.enabled:
+            if not self.shadow_prompt_version:
+                raise ValueError("shadow_prompt_version must be set when enabled=True")
+            if not self.experiment_id:
+                raise ValueError("experiment_id must be set when enabled=True")
+        return self
 
 
 class PromptConfig(BaseModel):
@@ -17,6 +36,7 @@ class PromptConfig(BaseModel):
     max_tokens: int = Field(default=1024, ge=64, le=8192)
     top_k_retrieval: int = Field(default=8, ge=1, le=50)
     score_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    ab_test: ABTestConfig | None = Field(default=None)
 
 
 class GuardrailsConfig(BaseModel):
