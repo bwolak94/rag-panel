@@ -120,6 +120,19 @@ class ReviewQueueResponse(BaseModel):
     page_size: int
 
 
+class DownloadUrlResponse(BaseModel):
+    """Presigned GET URL for downloading a document file directly from MinIO."""
+
+    download_url: str
+    expires_at: datetime
+
+
+class ReindexResponse(BaseModel):
+    """Response after triggering document re-ingestion."""
+
+    job_id: uuid.UUID
+
+
 class MinIOWebhookEvent(BaseModel):
     """
     Schema for MinIO bucket notification. MinIO sends this as POST JSON.
