@@ -1993,7 +1993,7 @@ Multiple tenants (medical clinics) need access to the same reference materials: 
 
 ### ADR-021: Token Budget and Early Stopping in Generate Node
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-30
 
 **Context:**
@@ -2022,7 +2022,7 @@ The `node_generate` node currently sends all `graded_chunks` as context to the L
 - **Dynamic context window based on model:** Considered and partially adopted. The `max_context_tokens` default should be set per model in `models_registry.params` for models with different context windows. The pipeline config overrides it.
 
 **Consequences:**
-- Modified: `src/graphs/query_graph/nodes/node_generate.py` (budget logic), `src/graphs/query_graph/state.py` (new fields), `src/api/schemas/pipeline.py` (PromptConfig extended).
+- Modified: `src/graphs/query_graph/nodes/node_generate.py` (budget logic), `src/graphs/query_graph/state.py` (new fields), `src/domain/schemas/pipeline.py` (PromptConfig extended).
 - `tiktoken` is already a dependency.
 
 **Agents:** `rag-engineer` (budget logic in node_generate), `backend-dev` (schema changes).

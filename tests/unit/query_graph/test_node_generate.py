@@ -14,6 +14,11 @@ Tests cover:
 - Token budget=None in state but guardrails_config override applies
 - _count_tokens returns correct value
 - _trim_chunks_to_budget preserves original chunk order
+- prompt_config.max_context_tokens overrides global default (ADR-021)
+- context_token_budget runtime override beats prompt_config.max_context_tokens
+- context_tokens_used returned in node result (ADR-021)
+- Early stopping: all chunks exceed budget → no_results=True, LLM not called (ADR-021)
+- Early stopping not triggered when graded_chunks already empty before trimming
 """
 
 from __future__ import annotations
@@ -51,6 +56,7 @@ def _make_state(
     conversation_history: list[dict[str, str]] | None = None,
     context_token_budget: int | None = None,
     guardrails_config: dict | None = None,
+    prompt_config: dict | None = None,
 ) -> QueryState:
     return QueryState(
         question=question,
@@ -64,6 +70,7 @@ def _make_state(
         conversation_history=conversation_history or [],
         context_token_budget=context_token_budget,
         guardrails_config=guardrails_config or {},
+        prompt_config=prompt_config or {},
     )
 
 
@@ -136,6 +143,20 @@ FAKE_PROMPT = (
     "Kontekst: {{CONTEXT_CHUNKS}}\n"
     "Historia: {{CONVERSATION_HISTORY}}\n"
     'Zwróć JSON {"answer": ..., "citations": [...]}'
+)
+
+# Pre-computed overhead for FAKE_PROMPT with default _make_state() parameters.
+# node_generate renders FAKE_PROMPT with {{CONTEXT_CHUNKS}}="" to measure overhead
+# before trimming chunks (ADR-021 §2b). Tests that set tight budgets must add this
+# overhead so that chunk_budget = total_budget - FAKE_PROMPT_OVERHEAD_TOKENS >= 0.
+_DEFAULT_QUESTION = "Jakie są procedury przyjęcia pacjenta?"
+_DEFAULT_HISTORY_RENDERED = "(brak historii)"  # _format_history([]) output
+FAKE_PROMPT_OVERHEAD_TOKENS: int = _count_tokens(
+    FAKE_PROMPT
+    .replace("{{QUESTION}}", _DEFAULT_QUESTION)
+    .replace("{{CONTEXT_CHUNKS}}", "")
+    .replace("{{CONVERSATION_HISTORY}}", _DEFAULT_HISTORY_RENDERED)
+    .replace("{{RESPONSE_LANGUAGE}}", "Polish")
 )
 
 
@@ -491,7 +512,7 @@ def test_trim_chunks_budget_not_exceeded_keeps_all_chunks() -> None:
         _make_chunk(highlight_text="Short text B.", score=0.8),
     ]
     # Use a large budget so nothing is trimmed
-    kept, dropped = _trim_chunks_to_budget(chunks, budget=100_000)
+    kept, dropped, tokens_used = _trim_chunks_to_budget(chunks, budget=100_000)
     assert dropped == 0
     assert len(kept) == 2
 
@@ -506,7 +527,7 @@ def test_trim_chunks_budget_exceeded_drops_lowest_score_chunks() -> None:
     single_chunk_tokens = _count_tokens("High score text.")
     budget = single_chunk_tokens  # fits exactly the high-score chunk
 
-    kept, dropped = _trim_chunks_to_budget(chunks, budget=budget)
+    kept, dropped, tokens_used = _trim_chunks_to_budget(chunks, budget=budget)
     assert dropped == 1
     assert len(kept) == 1
     # The high-score chunk must be retained
@@ -523,7 +544,7 @@ def test_trim_chunks_preserves_original_order_of_kept_chunks() -> None:
     # Budget that allows two chunks (b + a) but not c
     budget = _count_tokens("Alpha text.") + _count_tokens("Beta text.")
 
-    kept, dropped = _trim_chunks_to_budget(chunks, budget=budget)
+    kept, dropped, tokens_used = _trim_chunks_to_budget(chunks, budget=budget)
     assert dropped == 1
     # Original order: a (idx 0) then b (idx 1)
     assert kept[0]["document_id"] == "aaa"
@@ -532,9 +553,10 @@ def test_trim_chunks_preserves_original_order_of_kept_chunks() -> None:
 
 def test_trim_chunks_empty_list_returns_empty_with_zero_dropped() -> None:
     """Empty chunk list returns empty list with 0 dropped."""
-    kept, dropped = _trim_chunks_to_budget([], budget=1000)
+    kept, dropped, tokens_used = _trim_chunks_to_budget([], budget=1000)
     assert kept == []
     assert dropped == 0
+    assert tokens_used == 0
 
 
 # ---------------------------------------------------------------------------
@@ -584,8 +606,8 @@ async def test_budget_exceeded_lowest_score_chunk_dropped() -> None:
     )
     chunks = [high_chunk, low_chunk]
 
-    # Budget that fits only the high-score chunk
-    budget = _count_tokens("Important clinical note.")
+    # Budget = overhead + exactly enough for the high-score chunk only
+    budget = FAKE_PROMPT_OVERHEAD_TOKENS + _count_tokens("Important clinical note.")
     state = _make_state(graded_chunks=chunks, context_token_budget=budget)
 
     llm_json = json.dumps({"answer": "Odpowiedź.", "citations": []})
@@ -638,8 +660,8 @@ async def test_guardrails_config_budget_overrides_global_default() -> None:
     low_chunk = _make_chunk(highlight_text="Noise.", score=0.05, document_id="l")
     chunks = [high_chunk, low_chunk]
 
-    # Budget in guardrails_config fits only the high-score chunk
-    pipeline_budget = _count_tokens("Critical info.")
+    # Budget in guardrails_config = overhead + exactly enough for the high-score chunk
+    pipeline_budget = FAKE_PROMPT_OVERHEAD_TOKENS + _count_tokens("Critical info.")
     state = _make_state(
         graded_chunks=chunks,
         context_token_budget=None,
@@ -661,3 +683,145 @@ async def test_guardrails_config_budget_overrides_global_default() -> None:
     # document_id="h" is present; document_id="l" is absent from the XML chunks
     assert 'document_id="h"' in prompt_content
     assert 'document_id="l"' not in prompt_content
+
+
+# ---------------------------------------------------------------------------
+# ADR-021: new tests — prompt_config.max_context_tokens and early stopping
+# ---------------------------------------------------------------------------
+
+
+def test_trim_chunks_returns_tokens_used() -> None:
+    """_trim_chunks_to_budget third return value is the token count of kept chunks."""
+    chunk = _make_chunk(highlight_text="Hello world.", score=0.9)
+    expected_tokens = _count_tokens("Hello world.")
+
+    kept, dropped, tokens_used = _trim_chunks_to_budget([chunk], budget=100_000)
+    assert dropped == 0
+    assert tokens_used == expected_tokens
+
+
+def test_trim_chunks_tokens_used_counts_only_kept_chunks() -> None:
+    """tokens_used reflects only the chunks that fit the budget, not dropped ones."""
+    high_chunk = _make_chunk(highlight_text="Kept text here.", score=0.9, document_id="kept")
+    low_chunk = _make_chunk(highlight_text="Dropped text here.", score=0.1, document_id="drop")
+    budget = _count_tokens("Kept text here.")
+
+    kept, dropped, tokens_used = _trim_chunks_to_budget([high_chunk, low_chunk], budget=budget)
+    assert dropped == 1
+    assert tokens_used == _count_tokens("Kept text here.")
+
+
+@pytest.mark.asyncio
+async def test_prompt_config_max_context_tokens_overrides_global_default() -> None:
+    """prompt_config['max_context_tokens'] takes precedence over the global default."""
+    high_chunk = _make_chunk(highlight_text="Essential info.", score=0.9, document_id="kept")
+    low_chunk = _make_chunk(highlight_text="Irrelevant filler.", score=0.1, document_id="drop")
+    chunks = [high_chunk, low_chunk]
+
+    # Set max_context_tokens = overhead + exactly enough for the high-score chunk only
+    prompt_budget = FAKE_PROMPT_OVERHEAD_TOKENS + _count_tokens("Essential info.")
+    state = _make_state(
+        graded_chunks=chunks,
+        context_token_budget=None,
+        guardrails_config={},
+        prompt_config={"max_context_tokens": prompt_budget},
+    )
+
+    llm_json = json.dumps({"answer": "Wynik.", "citations": []})
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
+
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
+        result = await node_generate(state, _make_config(llm, db))
+
+    assert result["chunks_trimmed"] == 1
+    prompt_content = llm.chat_completion.call_args.kwargs["messages"][0]["content"]
+    assert 'document_id="kept"' in prompt_content
+    assert 'document_id="drop"' not in prompt_content
+
+
+@pytest.mark.asyncio
+async def test_context_token_budget_overrides_prompt_config_max_context_tokens() -> None:
+    """state.context_token_budget (runtime override) beats prompt_config.max_context_tokens."""
+    chunk = _make_chunk(highlight_text="Single chunk.", score=0.9)
+    state = _make_state(
+        graded_chunks=[chunk],
+        # runtime override large enough to keep the chunk
+        context_token_budget=100_000,
+        # prompt_config has a small but valid value (256 min); state override wins
+        prompt_config={"max_context_tokens": 256},
+    )
+
+    llm_json = json.dumps({"answer": "Wynik.", "citations": []})
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
+
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
+        result = await node_generate(state, _make_config(llm, db))
+
+    assert result["chunks_trimmed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_node_generate_returns_context_tokens_used() -> None:
+    """node_generate result includes context_tokens_used > 0 when chunks are included."""
+    chunk = _make_chunk(highlight_text="Context text.", score=0.9)
+    state = _make_state(graded_chunks=[chunk], context_token_budget=100_000)
+
+    llm_json = json.dumps({"answer": "Wynik.", "citations": []})
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
+
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
+        result = await node_generate(state, _make_config(llm, db))
+
+    assert "context_tokens_used" in result
+    assert result["context_tokens_used"] == _count_tokens("Context text.")
+
+
+@pytest.mark.asyncio
+async def test_early_stopping_when_all_chunks_exceed_budget() -> None:
+    """ADR-021: when budget is too small for any chunk, node_generate returns
+    no_results=True without calling the LLM."""
+    chunk = _make_chunk(highlight_text="Some medical information.", score=0.9)
+    # Budget of 1 token — too small for any real chunk
+    state = _make_state(graded_chunks=[chunk], context_token_budget=1)
+
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock()
+
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
+        result = await node_generate(state, _make_config(llm, db))
+
+    assert result["no_results"] is True
+    # LLM must not be called — no context means no generation
+    llm.chat_completion.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_early_stopping_not_triggered_when_graded_chunks_already_empty() -> None:
+    """Early stopping must NOT fire when graded_chunks was already empty before trimming.
+    (That case is the normal no-results path handled by node_grade_documents.)"""
+    state = _make_state(graded_chunks=[], context_token_budget=1)
+
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm_json = json.dumps({"answer": "Nie znalazłem.", "citations": []})
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
+
+    with patch("src.graphs.query_graph.nodes.node_generate._load_prompt", return_value=FAKE_PROMPT):
+        result = await node_generate(state, _make_config(llm, db))
+
+    # With empty input chunks the early stop guard must not trigger;
+    # node_generate proceeds to call LLM (empty context is intentional here).
+    assert result.get("no_results") is not True
+    llm.chat_completion.assert_called_once()

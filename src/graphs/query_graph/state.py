@@ -48,8 +48,10 @@ class QueryState(BaseModel):
     rerank_top_k: int | None = None  # None → keep all chunks after reranking
 
     # Token budget — controls context trimming in node_generate
-    context_token_budget: int | None = None  # None → no trimming applied
+    context_token_budget: int | None = None  # None → use prompt_config.max_context_tokens
     chunks_trimmed: int = 0  # count of chunks dropped due to budget; for observability
+    context_tokens_used: int = 0  # actual token count of context sent to LLM (ADR-021)
+    chunks_included: int = 0  # count of chunks that fit within the budget (ADR-021)
 
     # Graph RAG — set by node_graph_retrieve (opt-in via prompt_config.graph_rag_enabled)
     # Each element: {"entity": str, "entity_type": str, "icd_code": str|None,
