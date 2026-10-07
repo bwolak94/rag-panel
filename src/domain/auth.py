@@ -31,6 +31,10 @@ class UserContext:
     permissions: frozenset[str]  # Permission codes (e.g., "documents:upload")
     allowed_collection_ids: frozenset[UUID]  # Collections readable by user
     writable_collection_ids: frozenset[UUID]  # Collections writable by user
+    # Platform-wide public collections readable by this tenant (ADR-020).
+    # Populated by AuthRepository from collections.is_public=True rows.
+    # Default frozenset() for backward-compat (tests, seeding).
+    public_collection_ids: frozenset[UUID] = field(default_factory=frozenset)
     realm_roles: frozenset[str] = field(default_factory=frozenset)  # JWT realm_access.roles
 
     def __post_init__(self) -> None:
@@ -50,7 +54,10 @@ class UserContext:
         return permission in self.permissions
 
     def can_read_collection(self, collection_id: UUID) -> bool:
-        return collection_id in self.allowed_collection_ids
+        return (
+            collection_id in self.allowed_collection_ids
+            or collection_id in self.public_collection_ids
+        )
 
     def can_write_collection(self, collection_id: UUID) -> bool:
         return collection_id in self.writable_collection_ids

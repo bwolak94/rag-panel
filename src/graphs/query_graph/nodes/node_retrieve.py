@@ -1,7 +1,9 @@
 """node_retrieve — embed the rewritten query and retrieve chunks from Qdrant.
 
 This node is the only place in the query graph that calls RetrievalService.
-Tenant isolation is enforced via TenantContext(allowed_collection_ids).
+Tenant isolation is enforced via TenantContext(allowed_collection_ids,
+public_collection_ids). Private collections are filtered by tenant_id +
+collection_id; public collections (ADR-020) are filtered by collection_id only.
 
 GDPR:
 - Never log rewritten_query or chunk text.
@@ -63,7 +65,8 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
     """Embed the rewritten query and search Qdrant for relevant chunks.
 
     Args:
-        state: Must have rewritten_query, collection_ids, tenant_id, allowed_collection_ids.
+        state: Must have rewritten_query, collection_ids, tenant_id,
+               allowed_collection_ids, public_collection_ids (ADR-020).
         config: RunnableConfig with configurable["db"], configurable["llm"],
                 configurable["retrieval"].
 
@@ -88,6 +91,7 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
         tenant_id=state.tenant_id,
         collection_ids=list(state.allowed_collection_ids),
         query=query_text,
+        public_collection_ids=list(state.public_collection_ids),
     )
     if cached_chunks is not None:
         elapsed_ms = int((datetime.now(UTC) - node_start).total_seconds() * 1000)
@@ -151,10 +155,12 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
         (search_config or {}).get("score_threshold", _DEFAULT_SCORE_THRESHOLD)
     )
 
-    # Build tenant context
+    # Build tenant context — include public collections so Qdrant read filter
+    # spans both private and platform-wide public collections (ADR-020).
     tenant_ctx = TenantContext(
         tenant_id=state.tenant_id,
         allowed_collection_ids=list(state.allowed_collection_ids),
+        public_collection_ids=list(state.public_collection_ids),
     )
 
     async def _search_and_serialize(query_vec: list[float], q_text: str) -> list[dict[str, Any]]:
@@ -251,6 +257,7 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
         collection_ids=list(state.allowed_collection_ids),
         query=query_text,
         chunks=retrieved_chunks,
+        public_collection_ids=list(state.public_collection_ids),
     )
 
     return {

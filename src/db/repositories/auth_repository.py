@@ -170,6 +170,16 @@ class AuthRepository:
             row.collection_id for row in access_rows if row.access_level == "write"
         )
 
+        # Fetch platform-wide public collections (ADR-020).
+        # These are readable by every tenant — no collection_access grant required.
+        public_q = sa.select(Collection.id).where(
+            Collection.is_public == sa.true(),
+            Collection.is_active == sa.true(),
+        )
+        public_ids: frozenset[UUID] = frozenset(
+            (await self._session.execute(public_q)).scalars().all()
+        )
+
         return UserContext(
             user_id=user.id,
             keycloak_sub=keycloak_sub,
@@ -180,4 +190,5 @@ class AuthRepository:
             permissions=frozenset(permission_codes),
             allowed_collection_ids=readable,
             writable_collection_ids=writable,
+            public_collection_ids=public_ids,
         )

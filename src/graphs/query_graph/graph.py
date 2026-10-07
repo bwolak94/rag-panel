@@ -154,9 +154,12 @@ def _assert_pipeline_collections_authorized(
         return
 
     pipeline_set = set(pipeline.collection_ids)
-    allowed_set = set(ctx.allowed_collection_ids)
+    # A pipeline collection is accessible if the user has a private grant OR if it is a
+    # platform-wide public collection (ADR-020). Public collections do not require a
+    # CollectionAccess row, so they must be excluded from the forbidden set.
+    effective_allowed = set(ctx.allowed_collection_ids) | set(ctx.public_collection_ids)
 
-    forbidden = pipeline_set - allowed_set
+    forbidden = pipeline_set - effective_allowed
     if forbidden:
         logger.error(
             "pipeline_collection_authorization_violation",
@@ -218,6 +221,7 @@ async def invoke_query_graph(
         conversation_id=UUID(int=0),  # placeholder; conversation tracked by ChatService
         tenant_id=ctx.tenant_id,
         allowed_collection_ids=list(ctx.allowed_collection_ids),
+        public_collection_ids=list(ctx.public_collection_ids),
         pipeline_id=pipeline.id,
         llm_model_id=pipeline.llm_model_id,
         collection_ids=list(pipeline.collection_ids),

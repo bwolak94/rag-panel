@@ -26,6 +26,9 @@ class QueryState(BaseModel):
     conversation_id: UUID
     tenant_id: UUID
     allowed_collection_ids: list[UUID]
+    # Platform-wide public collection IDs seeded from UserContext (ADR-020).
+    # Empty list when no public collections exist or for pipelines not using them.
+    public_collection_ids: list[UUID] = Field(default_factory=list)
     pipeline_id: UUID
     llm_model_id: UUID  # from pipeline
     collection_ids: list[UUID]  # from pipeline
