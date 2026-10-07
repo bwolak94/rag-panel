@@ -152,8 +152,7 @@ FAKE_PROMPT = (
 _DEFAULT_QUESTION = "Jakie są procedury przyjęcia pacjenta?"
 _DEFAULT_HISTORY_RENDERED = "(brak historii)"  # _format_history([]) output
 FAKE_PROMPT_OVERHEAD_TOKENS: int = _count_tokens(
-    FAKE_PROMPT
-    .replace("{{QUESTION}}", _DEFAULT_QUESTION)
+    FAKE_PROMPT.replace("{{QUESTION}}", _DEFAULT_QUESTION)
     .replace("{{CONTEXT_CHUNKS}}", "")
     .replace("{{CONVERSATION_HISTORY}}", _DEFAULT_HISTORY_RENDERED)
     .replace("{{RESPONSE_LANGUAGE}}", "Polish")

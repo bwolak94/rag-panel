@@ -302,8 +302,7 @@ async def node_generate(state: QueryState, config: dict[str, Any]) -> dict[str, 
     # Compute overhead tokens: prompt rendered with question + history but EMPTY context.
     # This is the fixed cost of the prompt that cannot be trimmed.
     prompt_overhead = (
-        prompt_template
-        .replace("{{QUESTION}}", state.question)
+        prompt_template.replace("{{QUESTION}}", state.question)
         .replace("{{CONTEXT_CHUNKS}}", "")
         .replace("{{CONVERSATION_HISTORY}}", history_text)
         .replace("{{RESPONSE_LANGUAGE}}", response_lang_name)
@@ -360,8 +359,7 @@ async def node_generate(state: QueryState, config: dict[str, Any]) -> dict[str, 
 
     context_chunks_text = _build_context_chunks(graded_chunks)
     prompt = (
-        prompt_template
-        .replace("{{QUESTION}}", state.question)
+        prompt_template.replace("{{QUESTION}}", state.question)
         .replace("{{CONTEXT_CHUNKS}}", context_chunks_text)
         .replace("{{CONVERSATION_HISTORY}}", history_text)
         .replace("{{RESPONSE_LANGUAGE}}", response_lang_name)
