@@ -2031,7 +2031,7 @@ The `node_generate` node currently sends all `graded_chunks` as context to the L
 
 ### ADR-022: Import-Layer Enforcement via import-linter in CI
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-30
 
 **Context:**
