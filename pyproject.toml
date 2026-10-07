@@ -114,6 +114,7 @@ exclude_lines = [
 # ---------------------------------------------------------------------------
 [tool.importlinter]
 root_packages = ["src"]
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "domain must not import from api"
@@ -150,3 +151,36 @@ name = "ingest must not import from api"
 type = "forbidden"
 source_modules = ["src.ingest"]
 forbidden_modules = ["src.api"]
+
+# ADR-022: qdrant_client must only be imported inside src/retrieval/.
+# This prevents graph nodes, domain services, and API handlers from bypassing
+# RetrievalService and its mandatory tenant isolation filter.
+#
+# How ignore_imports works here (important):
+# import-linter's "forbidden" contract checks **transitive** paths, not only
+# direct imports. Without ignore_imports, any module in source_modules that
+# imports from src.retrieval.* would be flagged because src.retrieval.* itself
+# imports qdrant_client. The ignore_imports entries remove those specific edges
+# from the dependency graph before evaluation, severing the transitive paths
+# through src.retrieval.*. Only a NEW **direct** import of qdrant_client in one
+# of the source_modules will break the contract — which is exactly the intent.
+[[tool.importlinter.contracts]]
+name = "Qdrant isolation — qdrant_client forbidden outside src.retrieval"
+type = "forbidden"
+# src.main is intentionally omitted: it owns the AsyncQdrantClient lifespan
+# singleton (initialised once in app startup, closed on shutdown). This is
+# the sole permitted non-retrieval instantiation site (ADR-022).
+source_modules = [
+    "src.api",
+    "src.domain",
+    "src.core",
+    "src.graphs",
+    "src.ingest",
+    "src.db",
+]
+forbidden_modules = ["qdrant_client"]
+ignore_imports = [
+    "src.retrieval.service -> qdrant_client",
+    "src.retrieval.filters -> qdrant_client",
+    "src.retrieval.schemas -> qdrant_client",
+]
