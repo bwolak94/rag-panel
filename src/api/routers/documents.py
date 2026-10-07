@@ -1,11 +1,15 @@
 """Documents API router.
 
-POST   /documents                      → 202 DocumentUploadResponse
-GET    /documents                      → 200 DocumentListResponse
-GET    /documents/review-queue         → 200 ReviewQueueResponse  (documents:approve)
-GET    /documents/{id}                 → 200 DocumentResponse
-POST   /documents/{id}/review          → 204  (documents:approve)
-DELETE /documents/{id}                 → 204
+POST   /documents                          → 202 DocumentUploadResponse
+GET    /documents                          → 200 DocumentListResponse
+GET    /documents/review-queue             → 200 ReviewQueueResponse  (documents:approve)
+GET    /documents/{id}                     → 200 DocumentResponse
+POST   /documents/{id}/review              → 204  (documents:approve)
+DELETE /documents/{id}                     → 204  (documents:manage)
+GET    /documents/{id}/download            → 200 DownloadUrlResponse  (documents:read)
+POST   /documents/{id}/reindex             → 202 ReindexResponse      (documents:manage)
+GET    /documents/{id}/versions            → 200 DocumentVersionListResponse
+POST   /documents/{id}/versions/{n}/restore → 202                     (documents:upload)
 
 tenant_id always from JWT context — never from body/query/path.
 
@@ -34,6 +38,8 @@ from src.api.schemas.document import (
     DocumentResponse,
     DocumentUploadRequest,
     DocumentUploadResponse,
+    DownloadUrlResponse,
+    ReindexResponse,
     ReviewDecision,
     ReviewQueueResponse,
 )
@@ -43,7 +49,7 @@ from src.domain.auth import UserContext
 from src.domain.deletion_service import DeletionService
 from src.domain.document_service import DocumentService
 from src.domain.schemas.document_version import DocumentVersionListResponse
-from src.graphs.ingest_graph.graph import resume_ingest_graph
+from src.graphs.ingest_graph.graph import resume_ingest_graph, run_ingest_graph
 from src.retrieval.service import RetrievalService
 
 logger = structlog.get_logger(__name__)
@@ -75,7 +81,78 @@ async def _run_resume_ingest_bg(
                 "review_document.resume_ingest_failed",
                 document_id=str(document_id),
                 job_id=str(job_id),
-                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+
+
+async def _run_reindex_ingest_bg(
+    document_id: uuid.UUID,
+    job_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> None:
+    """Background task: run full ingest graph for a reindex request.
+
+    Looks up document and tenant records in its own DB session so the
+    IngestEvent can be constructed from live data.
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from src.db.models.document import Document
+    from src.db.models.tenant import Tenant
+    from src.ingest.schemas import IngestEvent
+
+    async with AsyncSessionLocal() as bg_session:
+        try:
+            doc_row = (
+                await bg_session.execute(
+                    select(Document).where(
+                        Document.id == document_id,
+                        Document.tenant_id == tenant_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if doc_row is None:
+                logger.warning(
+                    "reindex_document.document_not_found",
+                    document_id=str(document_id),
+                    job_id=str(job_id),
+                )
+                return
+
+            slug_row = (
+                await bg_session.execute(select(Tenant.slug).where(Tenant.id == tenant_id))
+            ).scalar_one_or_none()
+            if slug_row is None:
+                logger.warning(
+                    "reindex_document.tenant_not_found",
+                    tenant_id=str(tenant_id),
+                    job_id=str(job_id),
+                )
+                return
+
+            event = IngestEvent(
+                schema_version="1",
+                event_type="document.uploaded",
+                tenant_id=tenant_id,
+                document_id=document_id,
+                collection_id=doc_row.collection_id,
+                minio_bucket=f"tenant-{slug_row}",
+                minio_key=doc_row.minio_key,
+                size_bytes=doc_row.size_bytes,
+                content_type=doc_row.mime_type,
+                published_at=datetime.now(UTC),
+            )
+            await run_ingest_graph(event=event, job_id=job_id, session=bg_session)
+            await bg_session.commit()
+        except Exception as exc:
+            await bg_session.rollback()
+            logger.warning(
+                "reindex_document.ingest_failed",
+                document_id=str(document_id),
+                job_id=str(job_id),
+                error_type=type(exc).__name__,
             )
 
 
@@ -227,6 +304,56 @@ async def delete_document(
         retrieval_svc=retrieval_svc,
     )
     await session.commit()
+
+
+@router.get(
+    "/{document_id}/download",
+    response_model=DownloadUrlResponse,
+    summary="Generate a presigned GET URL for direct file download from MinIO (TTL ≤ 5 min)",
+)
+async def get_document_download_url(
+    document_id: uuid.UUID,
+    request: Request,
+    ctx: Annotated[UserContext, Depends(get_current_ctx)],
+    _perm: Annotated[None, Depends(_require_read)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> DownloadUrlResponse:
+    ip = request.client.host if request.client else None
+    return await DocumentService(session).get_download_url(
+        document_id=document_id,
+        ctx=ctx,
+        ip=ip,
+    )
+
+
+@router.post(
+    "/{document_id}/reindex",
+    response_model=ReindexResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Re-trigger the full ingest pipeline for an existing document (documents:manage)",
+)
+async def reindex_document(
+    document_id: uuid.UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    ctx: Annotated[UserContext, Depends(get_current_ctx)],
+    _perm: Annotated[None, Depends(_require_manage)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ReindexResponse:
+    ip = request.client.host if request.client else None
+    result = await DocumentService(session).reindex_document(
+        document_id=document_id,
+        ctx=ctx,
+        ip=ip,
+    )
+    await session.commit()
+    background_tasks.add_task(
+        _run_reindex_ingest_bg,
+        document_id,
+        result.job_id,
+        ctx.tenant_id,
+    )
+    return result
 
 
 @router.get(

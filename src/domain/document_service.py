@@ -19,16 +19,22 @@ from src.core.exceptions import (
     NotFoundError,
     PermissionDeniedError,
 )
+from src.db.models.ingestion_job import IngestionJob
 from src.db.repositories.document_repository import DocumentRepository
 from src.db.repositories.tenant_repository import TenantRepository
 from src.domain.audit_service import AuditService
-from src.domain.auth import UserContext
+from src.domain.auth import UserContext, assert_tenant_owns_resource
 from src.domain.schemas.document import (
     DocumentUploadRequest,
     DocumentUploadResponse,
+    DownloadUrlResponse,
+    ReindexResponse,
 )
 
 logger = structlog.get_logger(__name__)
+
+# Terminal statuses that allow re-ingestion from scratch.
+_REINDEXABLE_STATUSES: frozenset[str] = frozenset({"ready", "failed", "rejected"})
 
 
 class DocumentService:
@@ -179,8 +185,6 @@ class DocumentService:
             DomainValidationError: If document is not in needs_review status or
                 decision is invalid.
         """
-        from src.db.models.ingestion_job import IngestionJob
-
         doc = await self._repo.get_by_id(document_id, ctx.tenant_id)
         if doc is None:
             raise NotFoundError(f"Document {document_id} not found")
@@ -261,3 +265,142 @@ class DocumentService:
 
         else:
             raise DomainValidationError(f"Invalid review decision: {decision!r}")
+
+    async def get_download_url(
+        self,
+        *,
+        document_id: uuid.UUID,
+        ctx: UserContext,
+        ip: str | None,
+    ) -> DownloadUrlResponse:
+        """Generate a presigned GET URL for downloading a document from MinIO.
+
+        The URL TTL is capped at INGEST_PRESIGNED_URL_TTL_SECONDS (≤ 300 s)
+        per security policy.
+
+        Users with documents:manage bypass the per-collection read check because
+        they already have broader document management rights (e.g. delete, reindex).
+        All other users must have the document's collection in allowed_collection_ids.
+
+        Args:
+            document_id: Document to download.
+            ctx: Authenticated user context from JWT.
+            ip: Client IP for audit log.
+
+        Returns:
+            DownloadUrlResponse with download_url and expires_at.
+
+        Raises:
+            NotFoundError: If document not found, deleted, or belongs to a different tenant.
+            PermissionDeniedError: If user lacks read access to the document's collection.
+        """
+        doc = await self._repo.get_by_id(document_id, ctx.tenant_id)
+        if doc is None or doc.status == "deleted":
+            raise NotFoundError(f"Document {document_id} not found")
+
+        assert_tenant_owns_resource(doc.tenant_id, ctx)
+
+        # documents:manage grants collection bypass (consistent with delete endpoint).
+        # All other callers must have explicit collection read access.
+        if (
+            not ctx.has_permission("documents:manage")
+            and doc.collection_id not in ctx.allowed_collection_ids
+        ):
+            raise PermissionDeniedError("No read access to this document's collection")
+
+        tenant = await self._tenant_repo.get_by_id(ctx.tenant_id)
+        if tenant is None:
+            raise NotFoundError("Tenant not found")
+
+        bucket = f"tenant-{tenant.slug}"
+        ttl_seconds = settings.INGEST_PRESIGNED_URL_TTL_SECONDS
+        expires_at = datetime.now(UTC) + timedelta(seconds=ttl_seconds)
+
+        download_url: str = await asyncio.to_thread(
+            lambda: get_minio_client().presigned_get_object(
+                bucket, doc.minio_key, expires=timedelta(seconds=ttl_seconds)
+            )
+        )
+
+        await self._audit.log(
+            ctx=ctx,
+            action="document.download_url_generated",
+            resource_type="document",
+            resource_id=document_id,
+            details={"collection_id": str(doc.collection_id)},
+            ip=ip,
+        )
+
+        logger.info(
+            "download_url_generated",
+            document_id=str(document_id),
+            tenant_id=str(ctx.tenant_id),
+        )
+        return DownloadUrlResponse(download_url=download_url, expires_at=expires_at)
+
+    async def reindex_document(
+        self,
+        *,
+        document_id: uuid.UUID,
+        ctx: UserContext,
+        ip: str | None,
+    ) -> ReindexResponse:
+        """Re-trigger the full ingest pipeline for an existing document.
+
+        Only allowed for documents in terminal states (ready, failed, rejected).
+        Creates a new IngestionJob, resets document status to 'uploaded', and
+        returns the job_id so the router can launch the background ingest task.
+
+        Args:
+            document_id: Document to reindex.
+            ctx: Authenticated user context from JWT.
+            ip: Client IP for audit log.
+
+        Returns:
+            ReindexResponse with the new job_id.
+
+        Raises:
+            NotFoundError: If document not found or belongs to a different tenant.
+            DomainValidationError: If document is not in a terminal state.
+        """
+        doc = await self._repo.get_by_id(document_id, ctx.tenant_id)
+        if doc is None:
+            raise NotFoundError(f"Document {document_id} not found")
+
+        assert_tenant_owns_resource(doc.tenant_id, ctx)
+
+        if doc.status not in _REINDEXABLE_STATUSES:
+            raise DomainValidationError(
+                f"Document {document_id} cannot be reindexed from status '{doc.status}'. "
+                f"Allowed statuses: {sorted(_REINDEXABLE_STATUSES)}"
+            )
+
+        # Reset document status so ingest pipeline can run from scratch
+        await self._repo.update_status(document_id, ctx.tenant_id, "uploaded")
+
+        # Create a fresh IngestionJob
+        job = IngestionJob(
+            tenant_id=ctx.tenant_id,
+            document_id=document_id,
+            status="pending",
+            steps=[],
+        )
+        self._session.add(job)
+        await self._session.flush()
+
+        await self._audit.log(
+            ctx=ctx,
+            action="document.reindex_requested",
+            resource_type="document",
+            resource_id=document_id,
+            details={"collection_id": str(doc.collection_id)},
+            ip=ip,
+        )
+
+        logger.info(
+            "document_reindex_requested",
+            document_id=str(document_id),
+            tenant_id=str(ctx.tenant_id),
+            job_id=str(job.id),
+        )
+        return ReindexResponse(job_id=job.id)
