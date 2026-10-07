@@ -27,8 +27,12 @@ DOCUMENT_ID = uuid.uuid4()
 POINT_ID = uuid.uuid4()
 
 
+PUBLIC_COLLECTION_ID = uuid.uuid4()
+
+
 def _make_state(
     allowed_collection_ids: list[uuid.UUID] | None = None,
+    public_collection_ids: list[uuid.UUID] | None = None,
 ) -> QueryState:
     return QueryState(
         question="Jakie są procedury?",
@@ -37,6 +41,7 @@ def _make_state(
         allowed_collection_ids=(
             allowed_collection_ids if allowed_collection_ids is not None else [COLLECTION_ID]
         ),
+        public_collection_ids=public_collection_ids or [],
         pipeline_id=PIPELINE_ID,
         llm_model_id=LLM_MODEL_ID,
         collection_ids=[COLLECTION_ID],
@@ -207,3 +212,64 @@ async def test_slug_derived_from_model_id_when_no_slug() -> None:
 
     # BAAI/bge-m3 → baai_bge_m3 (replace / and - with _, lowercase)
     assert result["qdrant_collection"] == "emb_baai_bge_m3"
+
+
+# ---------------------------------------------------------------------------
+# ADR-020: public_collection_ids propagated to TenantContext
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_public_collection_ids_forwarded_to_tenant_context() -> None:
+    """node_retrieve passes public_collection_ids from state to TenantContext (ADR-020)."""
+    collection = _make_collection()
+    model = _make_embedding_model(slug="bge_m3")
+    db = _make_db(collection, model)
+
+    embed_data = MagicMock()
+    embed_data.embedding = [0.1] * 768
+    embed_response = MagicMock()
+    embed_response.data = [embed_data]
+
+    llm = AsyncMock()
+    llm.embeddings = AsyncMock(return_value=embed_response)
+
+    retrieval = AsyncMock()
+    retrieval.search = AsyncMock(return_value=[])
+
+    state = _make_state(public_collection_ids=[PUBLIC_COLLECTION_ID])
+    config = _make_config(llm, db, retrieval)
+
+    await node_retrieve(state, config)
+
+    call_args = retrieval.search.call_args
+    tenant_ctx = call_args.kwargs["ctx"]
+    assert PUBLIC_COLLECTION_ID in tenant_ctx.public_collection_ids
+
+
+@pytest.mark.asyncio
+async def test_empty_public_collection_ids_when_none_in_state() -> None:
+    """TenantContext.public_collection_ids is empty when state has none (ADR-020 default)."""
+    collection = _make_collection()
+    model = _make_embedding_model(slug="bge_m3")
+    db = _make_db(collection, model)
+
+    embed_data = MagicMock()
+    embed_data.embedding = [0.1] * 768
+    embed_response = MagicMock()
+    embed_response.data = [embed_data]
+
+    llm = AsyncMock()
+    llm.embeddings = AsyncMock(return_value=embed_response)
+
+    retrieval = AsyncMock()
+    retrieval.search = AsyncMock(return_value=[])
+
+    state = _make_state()  # no public_collection_ids
+    config = _make_config(llm, db, retrieval)
+
+    await node_retrieve(state, config)
+
+    call_args = retrieval.search.call_args
+    tenant_ctx = call_args.kwargs["ctx"]
+    assert tenant_ctx.public_collection_ids == []

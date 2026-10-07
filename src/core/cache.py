@@ -46,9 +46,15 @@ def _sha256_key(*parts: str) -> str:
     return hashlib.sha256(combined.encode()).hexdigest()[:32]
 
 
-def _retrieval_key(tenant_id: uuid.UUID, collection_ids: list[uuid.UUID], query: str) -> str:
+def _retrieval_key(
+    tenant_id: uuid.UUID,
+    collection_ids: list[uuid.UUID],
+    query: str,
+    public_collection_ids: list[uuid.UUID] | None = None,
+) -> str:
     sorted_ids = ",".join(sorted(str(c) for c in collection_ids))
-    digest = _sha256_key(sorted_ids, query)
+    sorted_public = ",".join(sorted(str(c) for c in (public_collection_ids or [])))
+    digest = _sha256_key(sorted_ids, sorted_public, query)
     return f"{_RETRIEVAL_PREFIX}:{tenant_id}:{digest}"
 
 
@@ -86,9 +92,10 @@ class RAGCache:
         tenant_id: uuid.UUID,
         collection_ids: list[uuid.UUID],
         query: str,
+        public_collection_ids: list[uuid.UUID] | None = None,
     ) -> list[dict[str, Any]] | None:
         """Return cached Qdrant results or None on miss / error."""
-        key = _retrieval_key(tenant_id, collection_ids, query)
+        key = _retrieval_key(tenant_id, collection_ids, query, public_collection_ids)
         try:
             raw = await self._redis.get(key)
             if raw is None:
@@ -107,9 +114,10 @@ class RAGCache:
         query: str,
         chunks: list[dict[str, Any]],
         ttl: int | None = None,
+        public_collection_ids: list[uuid.UUID] | None = None,
     ) -> None:
         """Store Qdrant results in cache and register key in invalidation sets."""
-        key = _retrieval_key(tenant_id, collection_ids, query)
+        key = _retrieval_key(tenant_id, collection_ids, query, public_collection_ids)
         effective_ttl = ttl if ttl is not None else self._retrieval_ttl
         try:
             payload = json.dumps(chunks, default=str)

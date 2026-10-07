@@ -26,7 +26,13 @@ PIPELINE_ID = uuid.uuid4()
 LLM_MODEL_ID = uuid.uuid4()
 
 
-def _make_ctx(allowed: frozenset[uuid.UUID]) -> UserContext:
+PUBLIC_COL = uuid.uuid4()
+
+
+def _make_ctx(
+    allowed: frozenset[uuid.UUID],
+    public: frozenset[uuid.UUID] | None = None,
+) -> UserContext:
     return UserContext(
         user_id=uuid.uuid4(),
         keycloak_sub="kc-user",
@@ -37,6 +43,7 @@ def _make_ctx(allowed: frozenset[uuid.UUID]) -> UserContext:
         permissions=frozenset({"chat:query"}),
         allowed_collection_ids=allowed,
         writable_collection_ids=frozenset(),
+        public_collection_ids=public or frozenset(),
     )
 
 
@@ -94,6 +101,42 @@ class TestAssertPipelineCollectionsAuthorized:
         pipeline = _make_pipeline([])
         _assert_pipeline_collections_authorized(pipeline, ctx)  # must not raise
 
+    def test_pipeline_with_public_collection_passes_for_normal_user(self) -> None:
+        """Pipeline referencing a public collection must not raise for a user without a
+        private CollectionAccess grant to it — public collections are accessible to all
+        tenants without explicit grants (ADR-020)."""
+        public_col = uuid.uuid4()
+        ctx = _make_ctx(
+            allowed=frozenset({COL_ALLOWED}),
+            public=frozenset({public_col}),
+        )
+        pipeline = _make_pipeline([public_col])
+        _assert_pipeline_collections_authorized(pipeline, ctx)  # must not raise
+
+    def test_pipeline_with_mixed_private_and_public_collections_passes(self) -> None:
+        """Pipeline using both a private and a public collection passes when user
+        has a grant to the private one and public_collection_ids covers the public one."""
+        public_col = uuid.uuid4()
+        ctx = _make_ctx(
+            allowed=frozenset({COL_ALLOWED}),
+            public=frozenset({public_col}),
+        )
+        pipeline = _make_pipeline([COL_ALLOWED, public_col])
+        _assert_pipeline_collections_authorized(pipeline, ctx)  # must not raise
+
+    def test_pipeline_with_public_collection_unknown_to_user_is_rejected(self) -> None:
+        """A collection that is neither in allowed_collection_ids nor public_collection_ids
+        is rejected even if the platform considers it public — the user's context must
+        have it in public_collection_ids to gain access."""
+        unknown_col = uuid.uuid4()
+        ctx = _make_ctx(
+            allowed=frozenset({COL_ALLOWED}),
+            public=frozenset(),  # this user's context has no public collections
+        )
+        pipeline = _make_pipeline([unknown_col])
+        with pytest.raises(TenantIsolationError):
+            _assert_pipeline_collections_authorized(pipeline, ctx)
+
     def test_raises_tenant_isolation_not_permission_denied(self) -> None:
         """The raised exception must be TenantIsolationError, never PermissionDeniedError.
 
@@ -113,3 +156,101 @@ class TestAssertPipelineCollectionsAuthorized:
             pass
         except PermissionDeniedError:
             pytest.fail("Should raise TenantIsolationError, not PermissionDeniedError")
+
+
+# ---------------------------------------------------------------------------
+# ADR-020: public_collection_ids seeded into QueryState from UserContext
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.tenant_isolation
+class TestPublicCollectionIdsSeededIntoState:
+    """invoke_query_graph seeds public_collection_ids from UserContext into QueryState."""
+
+    @pytest.mark.asyncio
+    async def test_public_collection_ids_included_in_initial_state(self) -> None:
+        """QueryState.public_collection_ids receives values from UserContext (ADR-020)."""
+        from unittest.mock import AsyncMock, patch
+
+        from src.graphs.query_graph.graph import invoke_query_graph
+
+        ctx = _make_ctx(frozenset({COL_ALLOWED}), public=frozenset({PUBLIC_COL}))
+        pipeline = _make_pipeline([COL_ALLOWED])
+
+        captured_state: dict = {}
+
+        async def fake_ainvoke(state: dict, config: dict) -> dict:
+            captured_state.update(state)
+            return {
+                "answer": "ok",
+                "citations": [],
+                "no_results": False,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "context_tokens_used": 0,
+                "chunks_included": 0,
+            }
+
+        with (
+            patch("src.graphs.query_graph.graph.build_query_graph") as mock_build,
+            patch("src.graphs.query_graph.graph._lf_update_span"),
+        ):
+            mock_graph = AsyncMock()
+            mock_graph.ainvoke = fake_ainvoke
+            mock_build.return_value = mock_graph
+
+            await invoke_query_graph(
+                question="test",
+                pipeline=pipeline,
+                ctx=ctx,
+                db=AsyncMock(),
+                llm=AsyncMock(),
+                retrieval=AsyncMock(),
+                conversation_history=[],
+            )
+
+        assert PUBLIC_COL in captured_state.get("public_collection_ids", [])
+
+    @pytest.mark.asyncio
+    async def test_empty_public_collection_ids_when_user_has_none(self) -> None:
+        """QueryState.public_collection_ids is empty when UserContext has none."""
+        from unittest.mock import AsyncMock, patch
+
+        from src.graphs.query_graph.graph import invoke_query_graph
+
+        ctx = _make_ctx(frozenset({COL_ALLOWED}))  # no public collections
+        pipeline = _make_pipeline([COL_ALLOWED])
+
+        captured_state: dict = {}
+
+        async def fake_ainvoke(state: dict, config: dict) -> dict:
+            captured_state.update(state)
+            return {
+                "answer": "ok",
+                "citations": [],
+                "no_results": False,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "context_tokens_used": 0,
+                "chunks_included": 0,
+            }
+
+        with (
+            patch("src.graphs.query_graph.graph.build_query_graph") as mock_build,
+            patch("src.graphs.query_graph.graph._lf_update_span"),
+        ):
+            mock_graph = AsyncMock()
+            mock_graph.ainvoke = fake_ainvoke
+            mock_build.return_value = mock_graph
+
+            await invoke_query_graph(
+                question="test",
+                pipeline=pipeline,
+                ctx=ctx,
+                db=AsyncMock(),
+                llm=AsyncMock(),
+                retrieval=AsyncMock(),
+                conversation_history=[],
+            )
+
+        assert captured_state.get("public_collection_ids") == []

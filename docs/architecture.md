@@ -1944,7 +1944,7 @@ class ABTestConfig(BaseModel):
 
 ### ADR-020: Shared Public Collections
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-30
 
 **Context:**
