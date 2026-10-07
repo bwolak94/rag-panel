@@ -249,12 +249,16 @@ async def invoke_query_graph(
     no_results: bool = final_state.get("no_results") or False
     prompt_tokens: int = final_state.get("prompt_tokens") or 0
     completion_tokens: int = final_state.get("completion_tokens") or 0
+    context_tokens_used: int = final_state.get("context_tokens_used") or 0
+    chunks_included: int = final_state.get("chunks_included") or 0
 
     _lf_update_span(
         {
             "no_results": no_results,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
+            "context_tokens_used": context_tokens_used,
+            "chunks_included": chunks_included,
         }
     )
 
@@ -265,6 +269,8 @@ async def invoke_query_graph(
         no_results=no_results,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
+        context_tokens_used=context_tokens_used,
+        chunks_included=chunks_included,
     )
 
     return answer, citations, no_results, prompt_tokens, completion_tokens

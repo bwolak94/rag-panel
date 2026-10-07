@@ -36,6 +36,12 @@ class PromptConfig(BaseModel):
     max_tokens: int = Field(default=1024, ge=64, le=8192)
     top_k_retrieval: int = Field(default=8, ge=1, le=50)
     score_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    max_context_tokens: int = Field(
+        default=3072,
+        ge=256,
+        le=16384,
+        description="Maximum tokens allocated to chunk context in the generation prompt (ADR-021).",
+    )
     ab_test: ABTestConfig | None = Field(default=None)
 
 

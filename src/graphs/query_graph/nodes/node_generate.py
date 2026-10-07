@@ -7,11 +7,16 @@ Before building the context string the node applies a token budget: chunks
 are sorted by score (descending) and the lowest-scoring chunks are dropped
 until the total context token count fits within the budget.  The budget is
 resolved from (in priority order):
-  1. state.context_token_budget  (set by the caller / pipeline config)
-  2. pipeline.guardrails_config["context_token_budget"]  (per-pipeline override)
-  3. Settings.DEFAULT_CONTEXT_TOKEN_BUDGET  (global fallback, default 6 000)
-When state.context_token_budget is explicitly None and no pipeline override
-exists, the global fallback is used.
+  1. state.context_token_budget  (set by the caller / runtime override)
+  2. state.prompt_config["max_context_tokens"]  (per-pipeline prompt config — ADR-021)
+  3. state.guardrails_config["context_token_budget"]  (legacy per-pipeline override)
+  4. Settings.DEFAULT_CONTEXT_TOKEN_BUDGET  (global fallback, default 6 000)
+When all of the above are absent, the global fallback is used.
+
+Early stopping (ADR-021): if ALL chunks are dropped by the budget (budget too
+small to fit even the highest-scoring chunk), the node returns
+``{"no_results": True}`` without calling the LLM, preventing an empty-context
+generation that could hallucinate.
 
 AB testing (shadow mode)
 ------------------------
@@ -85,7 +90,7 @@ def _count_tokens(text: str, encoding_name: str = "cl100k_base") -> int:
 
 def _trim_chunks_to_budget(
     chunks: list[dict[str, Any]], budget: int
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, int]:
     """Keep the highest-scoring chunks whose combined context tokens fit *budget*.
 
     Chunks are sorted by ``score`` descending so that the most relevant context
@@ -98,12 +103,12 @@ def _trim_chunks_to_budget(
         budget: Maximum total token count for the assembled context.
 
     Returns:
-        A tuple of ``(kept_chunks, dropped_count)`` where *kept_chunks*
-        preserves the original ordering (score-sorted order is used only for
-        the selection decision).
+        A tuple of ``(kept_chunks, dropped_count, tokens_used)`` where *kept_chunks*
+        preserves the original list order (score-sorted order is used only for the
+        selection decision) and *tokens_used* is the total token count of the kept chunks.
     """
     if not chunks:
-        return chunks, 0
+        return chunks, 0, 0
 
     # Sort a copy by score descending; keep original index for stable re-sort
     scored = sorted(enumerate(chunks), key=lambda t: t[1].get("score", 0.0), reverse=True)
@@ -121,7 +126,7 @@ def _trim_chunks_to_budget(
     # Rebuild list in original order
     kept = [c for i, c in enumerate(chunks) if i in kept_indices]
     dropped = len(chunks) - len(kept)
-    return kept, dropped
+    return kept, dropped, running_tokens
 
 
 def _format_history(history: list[dict[str, str]]) -> str:
@@ -223,14 +228,19 @@ def _resolve_token_budget(state: QueryState) -> int:
     """Return the effective context token budget for this request.
 
     Resolution order (first non-None value wins):
-    1. ``state.context_token_budget`` — explicit per-request override.
-    2. ``state.guardrails_config["context_token_budget"]`` — per-pipeline value
-       stored in RagPipeline.guardrails_config and propagated into state by
-       ChatService at graph invocation time.
-    3. ``settings.DEFAULT_CONTEXT_TOKEN_BUDGET`` — global application default.
+    1. ``state.context_token_budget`` — explicit per-request runtime override.
+    2. ``state.prompt_config["max_context_tokens"]`` — per-pipeline prompt config
+       (ADR-021; set via ``PromptConfig.max_context_tokens``).
+    3. ``state.guardrails_config["context_token_budget"]`` — legacy per-pipeline
+       value in ``RagPipeline.guardrails_config`` (kept for backwards compatibility).
+    4. ``settings.DEFAULT_CONTEXT_TOKEN_BUDGET`` — global application default.
     """
     if state.context_token_budget is not None:
         return state.context_token_budget
+
+    prompt_budget = state.prompt_config.get("max_context_tokens")
+    if prompt_budget is not None:
+        return int(prompt_budget)
 
     pipeline_budget = state.guardrails_config.get("context_token_budget")
     if pipeline_budget is not None:
@@ -250,7 +260,9 @@ async def node_generate(state: QueryState, config: dict[str, Any]) -> dict[str, 
 
     Returns:
         dict with keys: answer, citations, prompt_tokens, completion_tokens,
-        chunks_trimmed.
+        chunks_trimmed, context_tokens_used.
+        When all chunks are dropped by the budget, returns ``{"no_results": True}``
+        without calling the LLM (ADR-021 early stopping).
 
     Raises:
         QueryNodeError: If LLM call fails fatally.
@@ -272,26 +284,11 @@ async def node_generate(state: QueryState, config: dict[str, Any]) -> dict[str, 
     if model_record is None:
         raise QueryNodeError(f"LLM model not found: llm_model_id={state.llm_model_id}")
 
-    # --- Token budget: trim low-score chunks before building context ---
-    budget = _resolve_token_budget(state)
-    graded_chunks, chunks_dropped = _trim_chunks_to_budget(state.graded_chunks, budget)
-
-    if chunks_dropped > 0:
-        logger.warning(
-            "node_generate.context_trimmed",
-            tenant_id=str(state.tenant_id),
-            pipeline_id=str(state.pipeline_id),
-            chunks_before=len(state.graded_chunks),
-            chunks_dropped=chunks_dropped,
-            token_budget=budget,
-        )
-
-    context_chunks_text = _build_context_chunks(graded_chunks)
-    history_text = _format_history(state.conversation_history)
-
-    # Resolve prompt version: prompt_config.generate_prompt_version → "v1" default.
+    # --- Resolve prompt version and language before budget calculation ---
+    # These are needed to render the prompt overhead (system prompt + question + history)
+    # so we can subtract it from the total budget before trimming chunks (ADR-021 §2b).
     control_version: str = state.prompt_config.get("generate_prompt_version", "v1")
-
+    history_text = _format_history(state.conversation_history)
     _lang_names_full: dict[str, str] = {
         "pol": "Polish",
         "eng": "English",
@@ -300,9 +297,69 @@ async def node_generate(state: QueryState, config: dict[str, Any]) -> dict[str, 
         "spa": "Spanish",
     }
     response_lang_name = _lang_names_full.get(state.response_language, state.response_language)
+    prompt_template = _load_prompt(control_version)
+
+    # Compute overhead tokens: prompt rendered with question + history but EMPTY context.
+    # This is the fixed cost of the prompt that cannot be trimmed.
+    prompt_overhead = (
+        prompt_template.replace("{{QUESTION}}", state.question)
+        .replace("{{CONTEXT_CHUNKS}}", "")
+        .replace("{{CONVERSATION_HISTORY}}", history_text)
+        .replace("{{RESPONSE_LANGUAGE}}", response_lang_name)
+    )
+    overhead_tokens = _count_tokens(prompt_overhead)
+
+    # --- Token budget: trim low-score chunks to the remaining budget ---
+    budget = _resolve_token_budget(state)
+    chunk_budget = max(0, budget - overhead_tokens)
+    graded_chunks, chunks_dropped, context_tokens_used = _trim_chunks_to_budget(
+        state.graded_chunks, chunk_budget
+    )
+
+    if chunks_dropped > 0:
+        logger.warning(
+            "node_generate.context_trimmed",
+            tenant_id=str(state.tenant_id),
+            pipeline_id=str(state.pipeline_id),
+            chunks_before=len(state.graded_chunks),
+            chunks_dropped=chunks_dropped,
+            chunk_budget=chunk_budget,
+            overhead_tokens=overhead_tokens,
+            total_budget=budget,
+        )
+
+    # Early stopping (ADR-021): if all chunks were dropped by the budget, routing
+    # to the "not found" path prevents empty-context generation that could hallucinate.
+    if state.graded_chunks and not graded_chunks:
+        logger.warning(
+            "node_generate.early_stop_zero_chunks",
+            tenant_id=str(state.tenant_id),
+            pipeline_id=str(state.pipeline_id),
+            chunks_before=len(state.graded_chunks),
+            chunk_budget=chunk_budget,
+            overhead_tokens=overhead_tokens,
+            total_budget=budget,
+        )
+        _lf_update_span(
+            metadata={
+                "tenant_id": str(state.tenant_id),
+                "early_stop": True,
+                "chunks_before": len(state.graded_chunks),
+                "overhead_tokens": overhead_tokens,
+                "total_budget": budget,
+                "chunk_budget": chunk_budget,
+            }
+        )
+        return {
+            "no_results": True,
+            "chunks_trimmed": chunks_dropped,
+            "chunks_included": 0,
+            "context_tokens_used": 0,
+        }
+
+    context_chunks_text = _build_context_chunks(graded_chunks)
     prompt = (
-        _load_prompt(control_version)
-        .replace("{{QUESTION}}", state.question)
+        prompt_template.replace("{{QUESTION}}", state.question)
         .replace("{{CONTEXT_CHUNKS}}", context_chunks_text)
         .replace("{{CONVERSATION_HISTORY}}", history_text)
         .replace("{{RESPONSE_LANGUAGE}}", response_lang_name)
@@ -363,10 +420,13 @@ async def node_generate(state: QueryState, config: dict[str, Any]) -> dict[str, 
             "num_chunks_in": len(state.graded_chunks),
             "num_chunks_used": len(graded_chunks),
             "chunks_trimmed": chunks_dropped,
+            "context_tokens_used": context_tokens_used,
+            "overhead_tokens": overhead_tokens,
+            "total_budget": budget,
+            "chunk_budget": chunk_budget,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "citation_count": len(citations),
-            "token_budget": budget,
             "latency_ms": int(elapsed_ms),
         }
     )
@@ -377,6 +437,8 @@ async def node_generate(state: QueryState, config: dict[str, Any]) -> dict[str, 
         completion_tokens=completion_tokens,
         citation_count=len(citations),
         chunks_trimmed=chunks_dropped,
+        chunks_included=len(graded_chunks),
+        context_tokens_used=context_tokens_used,
         latency_ms=int(elapsed_ms),
     )
 
@@ -402,4 +464,6 @@ async def node_generate(state: QueryState, config: dict[str, Any]) -> dict[str, 
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "chunks_trimmed": chunks_dropped,
+        "chunks_included": len(graded_chunks),
+        "context_tokens_used": context_tokens_used,
     }

@@ -136,3 +136,43 @@ class TestPromptConfigWithABTest:
         """enabled=False with empty shadow_prompt_version and experiment_id must be valid."""
         config = ABTestConfig(enabled=False, shadow_prompt_version="", experiment_id="")
         assert not config.enabled
+
+
+class TestPromptConfigMaxContextTokens:
+    """Tests for PromptConfig.max_context_tokens (ADR-021)."""
+
+    def test_default_max_context_tokens_is_3072(self) -> None:
+        """Default PromptConfig must have max_context_tokens=3072."""
+        cfg = PromptConfig()
+        assert cfg.max_context_tokens == 3072
+
+    def test_custom_max_context_tokens_accepted(self) -> None:
+        """Any value within [256, 16384] must be accepted."""
+        cfg = PromptConfig(max_context_tokens=1024)
+        assert cfg.max_context_tokens == 1024
+
+    def test_max_context_tokens_boundary_min(self) -> None:
+        """Minimum value 256 must be valid."""
+        cfg = PromptConfig(max_context_tokens=256)
+        assert cfg.max_context_tokens == 256
+
+    def test_max_context_tokens_boundary_max(self) -> None:
+        """Maximum value 16384 must be valid."""
+        cfg = PromptConfig(max_context_tokens=16384)
+        assert cfg.max_context_tokens == 16384
+
+    def test_max_context_tokens_below_min_raises(self) -> None:
+        """Value below 256 must raise ValidationError."""
+        with pytest.raises(ValidationError):
+            PromptConfig(max_context_tokens=255)
+
+    def test_max_context_tokens_above_max_raises(self) -> None:
+        """Value above 16384 must raise ValidationError."""
+        with pytest.raises(ValidationError):
+            PromptConfig(max_context_tokens=16385)
+
+    def test_max_context_tokens_survives_round_trip(self) -> None:
+        """max_context_tokens must survive model_dump → model_validate round-trip."""
+        original = PromptConfig(max_context_tokens=4096)
+        restored = PromptConfig.model_validate(original.model_dump())
+        assert restored.max_context_tokens == 4096
