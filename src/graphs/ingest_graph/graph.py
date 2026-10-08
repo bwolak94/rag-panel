@@ -40,11 +40,13 @@ import uuid
 from typing import Any
 
 import structlog
+from langfuse import observe
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.clients.llm_client import LLMClient
 from src.core.clients.minio_client import get_minio_client
+from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.db.models.ingestion_job import IngestionJob
 from src.graphs.ingest_graph import nodes
 from src.graphs.ingest_graph.routing import (
@@ -241,6 +243,7 @@ async def _resolve_pipeline_flags(
     )
 
 
+@observe(name="run_ingest_graph", capture_input=False, capture_output=False)
 async def run_ingest_graph(
     event: IngestEvent,
     job_id: uuid.UUID,
@@ -257,6 +260,18 @@ async def run_ingest_graph(
     On failure: raises IngestNodeError; caller (EventProcessor) handles retry/DLQ.
     """
     thread_id = uuid.uuid4()
+
+    # Tag the Langfuse span immediately — before any failable await — so failure-path
+    # traces retain identification metadata (ADR-016).
+    _lf_update_span(
+        {
+            "tenant_id": str(event.tenant_id),
+            "document_id": str(event.document_id),
+            "collection_id": str(event.collection_id),
+            "job_id": str(job_id),
+            "thread_id": str(thread_id),
+        }
+    )
 
     # Store thread_id and mark job as processing
     await session.execute(
@@ -342,6 +357,7 @@ def build_resume_graph(checkpointer: Any = None) -> Any:
     return builder.compile(checkpointer=checkpointer)
 
 
+@observe(name="resume_ingest_graph", capture_input=False, capture_output=False)
 async def resume_ingest_graph(
     document_id: uuid.UUID,
     job_id: uuid.UUID,
@@ -367,6 +383,17 @@ async def resume_ingest_graph(
     Raises:
         NotFoundError: If document or job not found for the given tenant.
     """
+    # Tag the Langfuse span immediately with function-argument IDs — before any failable
+    # await — so failure-path traces (NotFoundError, etc.) retain identification metadata
+    # (ADR-016). collection_id and thread_id are added later once doc_row is loaded.
+    _lf_update_span(
+        {
+            "tenant_id": str(tenant_id),
+            "document_id": str(document_id),
+            "job_id": str(job_id),
+        }
+    )
+
     import json as _json
 
     from src.core.exceptions import NotFoundError
@@ -480,6 +507,16 @@ async def resume_ingest_graph(
             "llm": LLMClient(),
         }
     }
+
+    _lf_update_span(
+        {
+            "tenant_id": str(tenant_id),
+            "document_id": str(document_id),
+            "collection_id": str(doc_row.collection_id),
+            "job_id": str(job_id),
+            "thread_id": str(new_thread_id),
+        }
+    )
 
     graph = build_resume_graph()
     await graph.ainvoke(initial_state.model_dump(), config=config)

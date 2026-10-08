@@ -592,3 +592,219 @@ class TestSpanMetadataGdprCompliance:
             assert '"question"' not in call_body, (
                 "question text must not appear in node_retrieve span metadata"
             )
+
+
+# ---------------------------------------------------------------------------
+# run_ingest_graph / resume_ingest_graph entry points
+# ---------------------------------------------------------------------------
+
+
+class TestIngestGraphEntryPointsHaveObserve:
+    """Verify that ingest graph entry points are wrapped with @observe."""
+
+    def test_run_ingest_graph_has_observe(self) -> None:
+        from src.graphs.ingest_graph.graph import run_ingest_graph
+
+        assert _has_observe_decorator(run_ingest_graph), (
+            "run_ingest_graph must be decorated with @observe"
+        )
+
+    def test_resume_ingest_graph_has_observe(self) -> None:
+        from src.graphs.ingest_graph.graph import resume_ingest_graph
+
+        assert _has_observe_decorator(resume_ingest_graph), (
+            "resume_ingest_graph must be decorated with @observe"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Worker lifecycle: initialize_langfuse / shutdown_langfuse
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerLangfuseLifecycle:
+    """Verify that the ingest worker initializes and shuts down Langfuse correctly."""
+
+    @pytest.mark.asyncio
+    async def test_main_calls_initialize_langfuse(self) -> None:
+        """main() must call initialize_langfuse() before starting the worker."""
+        from unittest.mock import AsyncMock, patch
+
+        calls: list[str] = []
+
+        def _fake_init() -> None:
+            calls.append("init")
+
+        def _fake_shutdown() -> None:
+            calls.append("shutdown")
+
+        async def _noop(self: object) -> None:
+            pass
+
+        with (
+            patch("src.ingest.worker.initialize_langfuse", side_effect=_fake_init),
+            patch("src.ingest.worker.shutdown_langfuse", side_effect=_fake_shutdown),
+            patch("src.ingest.worker.configure_logging"),
+            patch("src.ingest.worker.IngestWorker.start", new=_noop),
+            # run_health_server is imported locally inside main(); patch at source
+            patch("src.ingest.health_server.run_health_server", new=AsyncMock()),
+            patch("src.ingest.worker.asyncio.get_running_loop"),
+            patch("src.ingest.worker.start_http_server"),
+        ):
+            from src.ingest import worker as worker_mod
+
+            await worker_mod.main()
+
+        assert "init" in calls, "initialize_langfuse was not called in main()"
+        assert calls.index("init") == 0, "initialize_langfuse must be called before gather"
+
+    @pytest.mark.asyncio
+    async def test_main_calls_shutdown_langfuse_in_finally(self) -> None:
+        """main() must call shutdown_langfuse() even when gather raises."""
+        from unittest.mock import AsyncMock, patch
+
+        shutdown_called = False
+
+        def _fake_shutdown() -> None:
+            nonlocal shutdown_called
+            shutdown_called = True
+
+        async def _failing_start(self: object) -> None:
+            raise RuntimeError("simulated failure")
+
+        with (
+            patch("src.ingest.worker.initialize_langfuse"),
+            patch("src.ingest.worker.shutdown_langfuse", side_effect=_fake_shutdown),
+            patch("src.ingest.worker.configure_logging"),
+            patch("src.ingest.worker.IngestWorker.start", new=_failing_start),
+            patch("src.ingest.health_server.run_health_server", new=AsyncMock()),
+            patch("src.ingest.worker.asyncio.get_running_loop"),
+            patch("src.ingest.worker.start_http_server"),
+            pytest.raises(RuntimeError),
+        ):
+            from src.ingest import worker as worker_mod
+
+            await worker_mod.main()
+
+        assert shutdown_called, "shutdown_langfuse must be called in the finally block"
+
+
+# ---------------------------------------------------------------------------
+# GDPR: no PII in run_ingest_graph / resume_ingest_graph span metadata
+# ---------------------------------------------------------------------------
+
+
+class TestIngestGraphEntryPointSpanGdprCompliance:
+    """Verify that _lf_update_span in run/resume_ingest_graph uses only GDPR-safe keys."""
+
+    @pytest.mark.asyncio
+    async def test_run_ingest_graph_span_metadata_gdpr_safe(self) -> None:
+        """run_ingest_graph span metadata must only contain GDPR-safe keys (runtime check)."""
+        import uuid
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        captured_metadata: list[dict] = []
+
+        def _capture(metadata: dict) -> None:
+            captured_metadata.append(metadata)
+
+        tenant_id = uuid.uuid4()
+        doc_id = uuid.uuid4()
+        col_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+
+        mock_event = MagicMock()
+        mock_event.tenant_id = tenant_id
+        mock_event.document_id = doc_id
+        mock_event.collection_id = col_id
+        mock_event.minio_key = "raw/key.pdf"
+
+        mock_session = MagicMock()
+        mock_execute = AsyncMock()
+        mock_execute.return_value = MagicMock()
+        mock_session.execute = mock_execute
+        mock_session.flush = AsyncMock()
+
+        async def _fake_resolve(*args: object, **kwargs: object) -> tuple:
+            return False, False, False, False
+
+        async def _fake_ainvoke(*args: object, **kwargs: object) -> dict:
+            return {}
+
+        mock_graph = MagicMock()
+        mock_graph.ainvoke = _fake_ainvoke
+
+        with (
+            patch(
+                "src.graphs.ingest_graph.graph._lf_update_span",
+                side_effect=_capture,
+            ),
+            patch(
+                "src.graphs.ingest_graph.graph._resolve_pipeline_flags",
+                new=_fake_resolve,
+            ),
+            patch(
+                "src.graphs.ingest_graph.graph.build_ingest_graph",
+                return_value=mock_graph,
+            ),
+            patch("src.graphs.ingest_graph.graph.get_minio_client"),
+            patch("src.graphs.ingest_graph.graph.LLMClient"),
+        ):
+            from src.graphs.ingest_graph.graph import run_ingest_graph
+
+            wrapped = run_ingest_graph.__wrapped__  # type: ignore[attr-defined]
+            await wrapped(mock_event, job_id, mock_session)
+
+        assert captured_metadata, "_lf_update_span was not called in run_ingest_graph"
+        for metadata in captured_metadata:
+            _assert_no_pii_in_metadata(metadata)
+            assert "tenant_id" in metadata
+            assert "document_id" in metadata
+            assert "job_id" in metadata
+            # minio_key must never appear
+            assert "minio_key" not in metadata
+
+    @pytest.mark.asyncio
+    async def test_resume_ingest_graph_early_span_metadata_gdpr_safe(self) -> None:
+        """resume_ingest_graph early span (before failable awaits) must only use safe keys."""
+        import uuid
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        captured_metadata: list[dict] = []
+
+        def _capture(metadata: dict) -> None:
+            captured_metadata.append(metadata)
+
+        tenant_id = uuid.uuid4()
+        doc_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+
+        # Simulate NotFoundError to abort early and capture only the first span call
+        from src.core.exceptions import NotFoundError
+
+        mock_session = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None  # triggers NotFoundError
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        with (
+            patch(
+                "src.graphs.ingest_graph.graph._lf_update_span",
+                side_effect=_capture,
+            ),
+            pytest.raises(NotFoundError),
+        ):
+            from src.graphs.ingest_graph.graph import resume_ingest_graph
+
+            wrapped = resume_ingest_graph.__wrapped__  # type: ignore[attr-defined]
+            await wrapped(doc_id, job_id, tenant_id, mock_session)
+
+        assert captured_metadata, "_lf_update_span was not called before the first await"
+        early_metadata = captured_metadata[0]
+        _assert_no_pii_in_metadata(early_metadata)
+        assert "tenant_id" in early_metadata
+        assert "document_id" in early_metadata
+        assert "job_id" in early_metadata
+        # Content fields must never appear
+        assert "extracted_text" not in early_metadata
+        assert "sections" not in early_metadata

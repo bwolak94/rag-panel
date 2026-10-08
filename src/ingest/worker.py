@@ -23,6 +23,7 @@ from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 from src.core.clients.redis_client import get_redis_client
 from src.core.database import AsyncSessionLocal
+from src.core.langfuse_client import initialize_langfuse, shutdown_langfuse
 from src.core.logging import configure_logging
 from src.ingest.event_processor import EventProcessor, MaxRetriesExceededError
 
@@ -213,8 +214,9 @@ class IngestWorker:
 
 async def main() -> None:
     configure_logging()
+    initialize_langfuse()
     worker = IngestWorker()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _shutdown(sig: signal.Signals) -> None:
         logger.info("shutdown_signal_received", signal=str(sig))
@@ -228,10 +230,13 @@ async def main() -> None:
 
     from src.ingest.health_server import run_health_server
 
-    await asyncio.gather(
-        worker.start(),
-        run_health_server(),
-    )
+    try:
+        await asyncio.gather(
+            worker.start(),
+            run_health_server(),
+        )
+    finally:
+        shutdown_langfuse()
 
 
 if __name__ == "__main__":

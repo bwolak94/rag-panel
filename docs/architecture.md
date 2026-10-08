@@ -1779,21 +1779,22 @@ class ChunkConfig(BaseModel):
 
 ### ADR-016: Full Langfuse Tracing for All Graph Nodes
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-30
+**Implemented:** 2026-10-08
 
 **Context:**
 ADR-010 established the tracing pattern (`@observe` with `capture_input=False, capture_output=False`) and applied it to the query graph. The ingest graph and any future graphs need the same treatment. Section 17 defines the span hierarchy for both graphs but ingest graph tracing is noted as "deferred" in ADR-010.
 
 **Decision:**
 
-1. **Apply `@observe` to all ingest graph nodes.** Each node in `src/graphs/ingest_graph/nodes/` gets the same decorator pattern as query graph nodes: `@observe(name="<node_name>", capture_input=False, capture_output=False)` with explicit GDPR-safe metadata via `langfuse_context.update_current_observation()`.
+1. **Apply `@observe` to all ingest graph nodes.** Each node in `src/graphs/ingest_graph/nodes/` gets the same decorator pattern as query graph nodes: `@observe(name="<node_name>", capture_input=False, capture_output=False)` with explicit GDPR-safe metadata via `update_span_metadata()`.
 
-2. **Root trace for ingest.** `run_ingest_graph()` (and `resume_ingest_graph()`) are decorated with `@observe(name="ingest_graph", capture_input=False, capture_output=False)`. The trace is tagged with `tenant_id`, `document_id`, `collection_id`, and `job_id` as metadata. Span hierarchy matches section 17.
+2. **Root trace for ingest.** `run_ingest_graph()` uses `@observe(name="run_ingest_graph", capture_input=False, capture_output=False)` and `resume_ingest_graph()` uses `@observe(name="resume_ingest_graph", capture_input=False, capture_output=False)`. Distinct names allow Langfuse dashboards to filter full-ingest runs from admin-resume runs independently. Both are tagged with `tenant_id`, `document_id`, `collection_id`, and `job_id` as metadata. The span metadata call is placed **before any failable await** so that failure-path traces retain identification metadata. Span hierarchy matches section 17.
 
 3. **Safe metadata per node.** Each ingest node records only: step name, latency, counts (page_count, chunk_count, point_count), model names, boolean flags (pii_found, is_duplicate), confidence scores. Never: extracted text, chunk text, file content, PII flag details.
 
-4. **Worker initialization.** The ingest worker process calls `initialize_langfuse(settings)` at startup and `shutdown_langfuse()` at shutdown, identical to the API process. If Langfuse is unconfigured, decorators are noops.
+4. **Worker initialization.** The ingest worker process calls `initialize_langfuse()` at startup and `shutdown_langfuse()` in a `finally` block at shutdown, identical to the API process. If Langfuse is unconfigured, decorators are noops.
 
 **Tenant isolation impact:** None. Langfuse traces are tagged with `tenant_id` for filtering in dashboards but Langfuse itself is a shared observability tool, not a data store with tenant isolation requirements. No document content reaches Langfuse.
 
