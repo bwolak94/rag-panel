@@ -273,3 +273,101 @@ async def test_empty_public_collection_ids_when_none_in_state() -> None:
     call_args = retrieval.search.call_args
     tenant_ctx = call_args.kwargs["ctx"]
     assert tenant_ctx.public_collection_ids == []
+
+
+# ---------------------------------------------------------------------------
+# ADR-013: Hybrid search dispatch via collection.search_config
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_mode_dispatched_when_search_config_hybrid() -> None:
+    """When collection.search_config has search_mode=hybrid, retrieval.search is called
+    with search_mode=SearchMode.HYBRID and the rewritten query text (ADR-013)."""
+    from src.retrieval.schemas import SearchMode
+
+    collection = _make_collection()
+    collection.search_config = {"search_mode": "hybrid", "top_k": 8, "score_threshold": 0.3}
+    model = _make_embedding_model(slug="bge_m3")
+    db = _make_db(collection, model)
+
+    embed_data = MagicMock()
+    embed_data.embedding = [0.1] * 768
+    embed_response = MagicMock()
+    embed_response.data = [embed_data]
+
+    llm = AsyncMock()
+    llm.embeddings = AsyncMock(return_value=embed_response)
+
+    retrieval = AsyncMock()
+    retrieval.search = AsyncMock(return_value=[_make_retrieval_result()])
+
+    state = _make_state()
+    config = _make_config(llm, db, retrieval)
+
+    result = await node_retrieve(state, config)
+
+    call_kwargs = retrieval.search.call_args.kwargs
+    assert call_kwargs["search_mode"] is SearchMode.HYBRID
+    assert call_kwargs["query_text"] == state.rewritten_query
+    assert len(result["retrieved_chunks"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_dense_search_mode_is_default_when_no_search_config() -> None:
+    """When collection.search_config is None, retrieval.search defaults to SearchMode.DENSE."""
+    from src.retrieval.schemas import SearchMode
+
+    collection = _make_collection()
+    collection.search_config = None
+    model = _make_embedding_model(slug="bge_m3")
+    db = _make_db(collection, model)
+
+    embed_data = MagicMock()
+    embed_data.embedding = [0.1] * 768
+    embed_response = MagicMock()
+    embed_response.data = [embed_data]
+
+    llm = AsyncMock()
+    llm.embeddings = AsyncMock(return_value=embed_response)
+
+    retrieval = AsyncMock()
+    retrieval.search = AsyncMock(return_value=[])
+
+    state = _make_state()
+    config = _make_config(llm, db, retrieval)
+
+    await node_retrieve(state, config)
+
+    call_kwargs = retrieval.search.call_args.kwargs
+    assert call_kwargs["search_mode"] is SearchMode.DENSE
+
+
+@pytest.mark.asyncio
+async def test_unknown_search_mode_in_search_config_falls_back_to_dense() -> None:
+    """An unrecognised search_mode value in search_config silently falls back to DENSE."""
+    from src.retrieval.schemas import SearchMode
+
+    collection = _make_collection()
+    collection.search_config = {"search_mode": "invalid_mode"}
+    model = _make_embedding_model(slug="bge_m3")
+    db = _make_db(collection, model)
+
+    embed_data = MagicMock()
+    embed_data.embedding = [0.1] * 768
+    embed_response = MagicMock()
+    embed_response.data = [embed_data]
+
+    llm = AsyncMock()
+    llm.embeddings = AsyncMock(return_value=embed_response)
+
+    retrieval = AsyncMock()
+    retrieval.search = AsyncMock(return_value=[])
+
+    state = _make_state()
+    config = _make_config(llm, db, retrieval)
+
+    await node_retrieve(state, config)
+
+    call_kwargs = retrieval.search.call_args.kwargs
+    assert call_kwargs["search_mode"] is SearchMode.DENSE
