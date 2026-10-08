@@ -46,11 +46,27 @@ class PromptConfig(BaseModel):
 
 
 class GuardrailsConfig(BaseModel):
-    """Validated guardrails configuration for a RAG pipeline."""
+    """Validated guardrails configuration for a RAG pipeline.
+
+    ADR-017: llm_check enables the structured LLM safety evaluation pass.
+    add_disclaimer appends the medical disclaimer to substantive answers.
+    """
 
     block_topics: list[str] = Field(default_factory=list)
     max_response_tokens: int = Field(default=2048, ge=64, le=8192)
     require_citations: bool = True
+    add_disclaimer: bool = Field(
+        default=False,
+        description="Append the medical disclaimer to substantive answers.",
+    )
+    llm_check: bool = Field(
+        default=False,
+        description=(
+            "ADR-017: Enable structured LLM safety evaluation (factual grounding, "
+            "PII detection, prompt injection). Uses guardrails_output_v2 prompt. "
+            "Fail-open with 30 s timeout; ~2-5 s latency when triggered."
+        ),
+    )
 
 
 class PipelineCreate(BaseModel):
