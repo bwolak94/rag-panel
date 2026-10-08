@@ -226,9 +226,7 @@ async def node_guardrails_output(state: QueryState, config: dict[str, Any]) -> d
 
     if llm_enabled and case_applied in ("disclaimer_appended", "passthrough") and answer:
         try:
-            decision = await _run_llm_guardrails(
-                answer, state, config, use_v2=llm_check
-            )
+            decision = await _run_llm_guardrails(answer, state, config, use_v2=llm_check)
             if not decision.safe:
                 answer = _LLM_REFUSAL_ANSWER
                 llm_guardrails_triggered = True
