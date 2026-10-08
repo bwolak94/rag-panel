@@ -154,3 +154,75 @@ async def test_upsert_chunk_embedding_mismatch_raises() -> None:
         pytest.raises(IngestNodeError, match="mismatch"),
     ):
         await node_upsert(state, _make_config(session, retrieval))
+
+
+# ---------------------------------------------------------------------------
+# ADR-013: Sparse vector encoding in node_upsert
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_attaches_sparse_vectors_when_fastembed_available() -> None:
+    """When fastembed encoding succeeds, each QdrantPoint receives a non-None sparse_vector."""
+    from qdrant_client.models import SparseVector
+
+    n = 2
+    chunks = _make_chunks(n)
+    embeddings = _make_embeddings(n)
+
+    session = _make_session()
+    retrieval = MagicMock(spec=RetrievalService)
+    captured_points: list[QdrantPoint] = []
+
+    async def capture_upsert(ctx: object, collection: str, points: list[QdrantPoint]) -> None:
+        captured_points.extend(points)
+
+    retrieval.upsert_batch = capture_upsert
+    state = _make_state(chunks=chunks, embeddings=embeddings)
+
+    fake_sparse = SparseVector(indices=[0, 5], values=[0.3, 0.7])
+
+    with (
+        patch("src.graphs.ingest_graph.nodes.node_upsert.update_step", new=AsyncMock()),
+        patch(
+            "src.retrieval.service._encode_sparse_sync",
+            return_value=fake_sparse,
+        ),
+    ):
+        await node_upsert(state, _make_config(session, retrieval))
+
+    assert len(captured_points) == n
+    for point in captured_points:
+        assert point.sparse_vector is not None, "sparse_vector must be set when fastembed succeeds"
+        assert isinstance(point.sparse_vector, SparseVector)
+
+
+@pytest.mark.asyncio
+async def test_upsert_falls_back_to_none_sparse_when_encode_fails() -> None:
+    """When fastembed encoding raises, sparse_vector falls back to None (graceful degradation)."""
+    n = 2
+    chunks = _make_chunks(n)
+    embeddings = _make_embeddings(n)
+
+    session = _make_session()
+    retrieval = MagicMock(spec=RetrievalService)
+    captured_points: list[QdrantPoint] = []
+
+    async def capture_upsert(ctx: object, collection: str, points: list[QdrantPoint]) -> None:
+        captured_points.extend(points)
+
+    retrieval.upsert_batch = capture_upsert
+    state = _make_state(chunks=chunks, embeddings=embeddings)
+
+    with (
+        patch("src.graphs.ingest_graph.nodes.node_upsert.update_step", new=AsyncMock()),
+        patch(
+            "src.retrieval.service._encode_sparse_sync",
+            side_effect=RuntimeError("fastembed unavailable"),
+        ),
+    ):
+        await node_upsert(state, _make_config(session, retrieval))
+
+    assert len(captured_points) == n
+    for point in captured_points:
+        assert point.sparse_vector is None, "sparse_vector must be None when encoding fails"

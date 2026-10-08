@@ -1648,8 +1648,15 @@ The following ADRs (013--027) cover planned improvements and new features for th
 
 ### ADR-013: Hybrid Search -- BM25 + Dense Vector with Reciprocal Rank Fusion
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-30
+**Implemented:** 2026-10-08
+
+**Implementation notes (deviations from original spec):**
+- Feature flag is per-collection via `collections.search_config["search_mode"]` (values: `"dense"` / `"hybrid"`), not a pipeline-level `prompt_config.hybrid_search` bool. This is preferable because hybrid search is a property of the indexed data (sparse vectors present/absent), not a per-query policy.
+- Sparse vector generation at ingest is in `node_upsert` (not `node_embed`). `node_embed` produces dense embeddings; `node_upsert` computes sparse BM25 vectors for each chunk in parallel via a `ThreadPoolExecutor`, then upserts both in one named-vector batch. Encoding failure is non-fatal: sparse_vector falls back to None (upsert proceeds with dense only).
+- RRF implementation: `src/retrieval/fusion.py` with `rrf_fuse()` as specified. `src/retrieval/reranker.py` re-exports `reciprocal_rank_fusion = rrf_fuse` for backward compatibility.
+- Qdrant-native hybrid path (Prefetch + FusionQuery(RRF)) is the primary path. Legacy in-memory BM25 fallback in `_search_hybrid_bm25_fallback()` handles collections without sparse vector config.
 
 **Context:**
 Dense vector search alone struggles with keyword-heavy medical queries (drug names, ICD codes, exact regulation numbers). Section 19 already anticipates hybrid retrieval. Qdrant natively supports sparse vectors alongside dense vectors in the same collection, enabling BM25-style lexical search without a separate index. Reciprocal Rank Fusion (RRF) is a well-understood, parameter-light fusion strategy.
