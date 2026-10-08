@@ -1814,8 +1814,9 @@ ADR-010 established the tracing pattern (`@observe` with `capture_input=False, c
 
 ### ADR-017: Structured Output in Guardrails Node
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-30
+**Implemented:** 2026-10-08
 
 **Context:**
 The `node_guardrails_output` node is currently rule-based (string matching, regex). ADR-009 decision 11 describes it as checking `pipeline.guardrails` for disclaimer addition and prompt injection leakage. For production use, more sophisticated checks (factual grounding, hallucination detection, toxicity) require LLM assistance. Using LLM JSON mode (structured output) ensures the guardrails response is machine-parseable without fragile string parsing.
@@ -1834,7 +1835,7 @@ The `node_guardrails_output` node is currently rule-based (string matching, rege
 }
 ```
 
-2. **Prompt in `src/graphs/prompts/guardrails_output_v2.md`.** The prompt instructs the LLM to evaluate the answer against the retrieved context for factual grounding, check for PII leakage, and determine if a domain disclaimer is needed. The `reasoning` field is recorded only in debug mode (never in production Langfuse traces).
+2. **Prompt in `src/graphs/prompts/guardrails_output_v2.md`.** The prompt instructs the LLM to evaluate the answer against the retrieved context for factual grounding, check for PII leakage, and determine if a domain disclaimer is needed. The `reasoning` field is **never recorded in any environment** (annotated `Field(exclude=True)` on the Pydantic model) — it may contain answer-derived free text and must not reach logs or Langfuse traces.
 
 3. **Fallback to rule-based.** When `pipeline.guardrails.llm_check` is false or absent, the existing rule-based logic remains active. The LLM-based check is additive, not a replacement.
 

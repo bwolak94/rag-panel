@@ -40,6 +40,7 @@ class LLMClient:
         base_url: str | None = None,
         response_format: dict[str, str] | None = None,
         temperature: float = 0.0,
+        timeout: float | None = None,
     ) -> Any:
         """Call the chat completions endpoint.
 
@@ -49,6 +50,8 @@ class LLMClient:
             base_url: Override the default endpoint URL.
             response_format: e.g. {"type": "json_object"}.
             temperature: Sampling temperature.
+            timeout: Request timeout in seconds. None uses the SDK default (600 s).
+                     ADR-017 specifies 30 s for the guardrails LLM call.
 
         Returns:
             OpenAI ChatCompletion response object.
@@ -60,6 +63,8 @@ class LLMClient:
         }
         if response_format:
             kwargs["response_format"] = response_format
+        if timeout is not None:
+            kwargs["timeout"] = timeout
 
         client = self._client(base_url)
         return await client.chat.completions.create(**kwargs)
