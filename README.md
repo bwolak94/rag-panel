@@ -1,5 +1,14 @@
 # RAG Platform
 
+[![CI](https://github.com/bwolak94/rag-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/bwolak94/rag-panel/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-orchestration-1C3C3C)
+![Qdrant](https://img.shields.io/badge/Qdrant-vector%20store-DC244C)
+![Keycloak](https://img.shields.io/badge/Keycloak-OIDC%20%2F%20RBAC-4D4D4D?logo=keycloak&logoColor=white)
+![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-D7FF64)
+![License: Proprietary](https://img.shields.io/badge/license-proprietary-lightgrey)
+
 A self-hosted, multi-tenant Retrieval-Augmented Generation (RAG) platform built for organisations handling sensitive documents. Designed on-premise-first (initial pilot: medical clinic), with a generic multi-tenant architecture that can be white-labelled for any organisation.
 
 ---
@@ -406,3 +415,21 @@ Full ADRs are in [`docs/architecture.md`](docs/architecture.md). Key decisions:
 - **Postgres checkpointer** — LangGraph graph state checkpointed in Postgres, enabling conversation resume and ingest pipeline debugging
 - **Idempotent ingest** — SHA-256 per tenant + deterministic Qdrant point IDs allow safe event replay without duplicating chunks
 - **Stateless API** — all state in external stores; any API replica can be restarted or replaced without data loss
+
+---
+
+## AI-Assisted Development
+
+The repository ships a versioned Claude Code setup used throughout development:
+
+- [`CLAUDE.md`](CLAUDE.md) — project memory: architecture rules, layering and conventions
+- [`.claude/agents/`](.claude/agents) — specialised sub-agents (architect, RAG engineer, backend, ML engineer, microservices, reviewer)
+- [`.claude/skills/`](.claude/skills) — repeatable procedures: `/new-endpoint`, `/langgraph-node`, `/rag-eval`, `/tenant-isolation-check`
+- [`tasks/`](tasks) — implementation backlog; each task maps to a feature branch and a reviewed PR
+
+---
+
+## License
+
+Proprietary — © 2026 Bartosz Wolak. All rights reserved.
+The source is published for review and evaluation only; see [`LICENSE`](LICENSE). For commercial licensing, contact [@bwolak94](https://github.com/bwolak94).
