@@ -9,15 +9,57 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+class ChunkStrategyConfig(BaseModel):
+    """Per-document-type chunking strategy configuration (ADR-015).
+
+    Used as values in ``ChunkConfig.type_overrides`` to override both strategy
+    and size parameters for a specific document type (e.g., ``"table"``,
+    ``"clinical_note"``).
+    """
+
+    strategy: Literal["recursive", "section_aware", "sentence", "row"] = "recursive"
+    chunk_size: int = Field(default=512, ge=64, le=4096)
+    chunk_overlap: int = Field(default=64, ge=0, le=512)
+
+    @model_validator(mode="after")
+    def chunk_overlap_less_than_chunk_size(self) -> ChunkStrategyConfig:
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("chunk_overlap must be less than chunk_size")
+        return self
+
+
+class LegacyChunkSizeOverride(BaseModel):
+    """Flat size-only override for backward-compat JSONB records.
+
+    Pre-ADR-015 collections stored ``document_type_overrides`` entries that contained
+    only ``chunk_size`` and ``overlap``.  This model replaces the old self-referential
+    ``dict[str, ChunkConfig]`` type to prevent unbounded recursive nesting.
+    """
+
+    chunk_size: int = Field(default=512, ge=64, le=4096)
+    overlap: int = Field(default=64, ge=0, le=512)
+
+    @model_validator(mode="after")
+    def overlap_less_than_chunk_size(self) -> LegacyChunkSizeOverride:
+        if self.overlap >= self.chunk_size:
+            raise ValueError("overlap must be less than chunk_size")
+        return self
+
+
 class ChunkConfig(BaseModel):
     """Validated schema for collections.chunk_config JSONB."""
 
-    strategy: Literal["recursive", "sentence", "semantic", "by_section"] = "recursive"
+    strategy: Literal["recursive", "section_aware", "sentence", "row"] = "recursive"
     chunk_size: int = Field(default=512, ge=64, le=4096)
     overlap: int = Field(default=64, ge=0, le=512)
     min_chunk_size: int = Field(default=64, ge=32, le=256)
     separators: list[str] = Field(default_factory=lambda: ["\n\n", "\n", " "])
-    document_type_overrides: dict[str, ChunkConfig] = Field(default_factory=dict)
+    # ADR-015: per-document-type full strategy override (strategy + size).
+    # Keys are document_type values from ValidationResult (e.g. "table", "clinical_note").
+    type_overrides: dict[str, ChunkStrategyConfig] = Field(default_factory=dict)
+    # Backward-compat: flat size-only overrides from pre-ADR-015 collections.
+    # Prefer type_overrides for new configurations.
+    document_type_overrides: dict[str, LegacyChunkSizeOverride] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def overlap_less_than_chunk_size(self) -> ChunkConfig:

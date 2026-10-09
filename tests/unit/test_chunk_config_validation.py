@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.api.schemas.collection import ChunkConfig, ValidationConfig
+from src.api.schemas.collection import (
+    ChunkConfig,
+    ChunkStrategyConfig,
+    LegacyChunkSizeOverride,
+    ValidationConfig,
+)
 
 
 class TestChunkConfigValidation:
@@ -50,23 +55,29 @@ class TestChunkConfigValidation:
             ChunkConfig(strategy="invalid")  # type: ignore[arg-type]
 
     def test_all_valid_strategies(self) -> None:
-        for strategy in ("recursive", "sentence", "semantic", "by_section"):
+        for strategy in ("recursive", "sentence", "section_aware", "row"):
             cfg = ChunkConfig(strategy=strategy)  # type: ignore[arg-type]
             assert cfg.strategy == strategy
 
-    def test_document_type_overrides_nested_chunk_config(self) -> None:
-        """document_type_overrides can contain nested ChunkConfig entries."""
+    def test_legacy_strategy_literals_rejected(self) -> None:
+        """Old literals 'semantic' and 'by_section' are no longer valid (ADR-015)."""
+        for strategy in ("semantic", "by_section"):
+            with pytest.raises(ValidationError):
+                ChunkConfig(strategy=strategy)  # type: ignore[arg-type]
+
+    def test_document_type_overrides_flat_legacy(self) -> None:
+        """document_type_overrides uses LegacyChunkSizeOverride (no recursive nesting)."""
         cfg = ChunkConfig(
             chunk_size=512,
             overlap=64,
             document_type_overrides={
-                "pdf": ChunkConfig(chunk_size=256, overlap=32),
+                "pdf": LegacyChunkSizeOverride(chunk_size=256, overlap=32),
             },
         )
         assert cfg.document_type_overrides["pdf"].chunk_size == 256
 
-    def test_document_type_overrides_nested_invalid(self) -> None:
-        """Nested ChunkConfig inside overrides is also validated."""
+    def test_document_type_overrides_overlap_invalid(self) -> None:
+        """LegacyChunkSizeOverride inside overrides is validated."""
         with pytest.raises(ValidationError):
             ChunkConfig(
                 chunk_size=512,
@@ -75,6 +86,36 @@ class TestChunkConfigValidation:
                     "pdf": {"chunk_size": 200, "overlap": 200},  # overlap >= chunk_size
                 },
             )
+
+
+class TestChunkStrategyConfigValidation:
+    """ADR-015: ChunkStrategyConfig schema tests."""
+
+    def test_valid_defaults(self) -> None:
+        cfg = ChunkStrategyConfig()
+        assert cfg.strategy == "recursive"
+        assert cfg.chunk_size == 512
+        assert cfg.chunk_overlap == 64
+
+    def test_all_valid_strategies(self) -> None:
+        for strategy in ("recursive", "section_aware", "sentence", "row"):
+            cfg = ChunkStrategyConfig(strategy=strategy)  # type: ignore[arg-type]
+            assert cfg.strategy == strategy
+
+    def test_chunk_overlap_gte_chunk_size_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="chunk_overlap must be less than chunk_size"):
+            ChunkStrategyConfig(chunk_size=100, chunk_overlap=100)
+
+    def test_type_overrides_in_chunk_config(self) -> None:
+        cfg = ChunkConfig(
+            chunk_size=512,
+            overlap=64,
+            type_overrides={
+                "table": ChunkStrategyConfig(strategy="row", chunk_size=256, chunk_overlap=0),
+            },
+        )
+        assert cfg.type_overrides["table"].strategy == "row"
+        assert cfg.type_overrides["table"].chunk_size == 256
 
 
 class TestValidationConfigValidation:

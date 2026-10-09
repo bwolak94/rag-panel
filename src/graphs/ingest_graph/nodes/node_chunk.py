@@ -110,23 +110,50 @@ async def node_chunk(state: IngestState, config: dict[str, Any]) -> dict[str, An
         collection = await get_collection(session, state.collection_id)
         chunk_config: dict[str, Any] = collection.chunk_config or {}
 
-        # --- resolve strategy ---
         category: str | None = state.validation_result.category if state.validation_result else None
-        strategy = select_strategy(chunk_config, category)
+        doc_type: str | None = (
+            state.validation_result.document_type if state.validation_result else None
+        )
+
+        # --- ADR-015: type_overrides — per-document-type full config (strategy + size) ---
+        type_overrides_map: dict[str, Any] = chunk_config.get("type_overrides", {})
+        type_override: dict[str, Any] | None = (
+            type_overrides_map.get(doc_type) if doc_type else None
+        )
+
+        # --- resolve strategy ---
+        # type_overrides strategy beats category override beats collection default.
+        if type_override and type_override.get("strategy"):
+            raw_strategy = type_override["strategy"]
+            try:
+                strategy = ChunkStrategy(raw_strategy)
+            except ValueError:
+                strategy = select_strategy(chunk_config, category)
+        else:
+            strategy = select_strategy(chunk_config, category)
 
         # --- resolve size parameters ---
         chunk_size: int = chunk_config.get("chunk_size", 512)
         overlap: int = chunk_config.get("overlap", 64)
 
-        # Per-document-type size overrides (unchanged from previous version)
-        doc_type: str | None = (
-            state.validation_result.document_type if state.validation_result else None
-        )
-        overrides: dict[str, Any] = chunk_config.get("document_type_overrides", {})
-        if doc_type and doc_type in overrides:
-            chunk_size = overrides[doc_type].get("chunk_size", chunk_size)
-            overlap = overrides[doc_type].get("overlap", overlap)
+        if type_override:
+            # type_overrides uses chunk_overlap key (ADR-015 ChunkStrategyConfig field name).
+            chunk_size = type_override.get("chunk_size", chunk_size)
+            overlap = type_override.get("chunk_overlap", type_override.get("overlap", overlap))
+        else:
+            # Backward-compat: document_type_overrides carries size-only overrides.
+            legacy_overrides: dict[str, Any] = chunk_config.get("document_type_overrides", {})
+            if doc_type and doc_type in legacy_overrides:
+                chunk_size = legacy_overrides[doc_type].get("chunk_size", chunk_size)
+                overlap = legacy_overrides[doc_type].get("overlap", overlap)
 
+        # Guard: JSONB bypasses Pydantic validation, so enforce the invariant here.
+        if overlap >= chunk_size:
+            overlap = chunk_size // 4
+
+        # Default 0 so JSONB records without this key are not filtered (backward compat).
+        # New records validated by ChunkConfig always carry the key with Pydantic's default.
+        min_chunk_size: int = chunk_config.get("min_chunk_size", 0)
         sentences_per_chunk: int = chunk_config.get("sentences_per_chunk", 4)
         overlap_sentences: int = chunk_config.get("overlap_sentences", 1)
         rows_per_chunk: int = chunk_config.get("rows_per_chunk", 10)
@@ -165,6 +192,9 @@ async def node_chunk(state: IngestState, config: dict[str, Any]) -> dict[str, An
                     point_id=_make_point_id(state.document_id, idx),
                 )
             )
+
+        # Drop chunks below min_chunk_size threshold (schema promise enforcement).
+        chunks = [c for c in chunks if c.token_count >= min_chunk_size]
 
         if not chunks:
             raise IngestNodeError("chunking produced 0 chunks — document may be empty")
