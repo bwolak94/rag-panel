@@ -488,3 +488,117 @@ def test_chunk_row_skips_empty_lines() -> None:
     assert "Row A" in chunks[0][0]
     assert "Row B" in chunks[0][0]
     assert "Row C" in chunks[0][0]
+
+
+# ---------------------------------------------------------------------------
+# ADR-015: type_overrides tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_type_overrides_strategy_takes_precedence_over_category() -> None:
+    """type_overrides[doc_type].strategy beats strategy_by_category."""
+    session = _make_session()
+    # category says "sentence", but doc_type type_overrides says "row"
+    vr = ValidationResult(document_type="lab_report", category="clinical_note", quality_score=0.9)
+    state = _make_state(extracted_text=_ROW_TEXT, validation_result=vr)
+    config = {
+        "strategy": "recursive",
+        "strategy_by_category": {"clinical_note": "sentence"},  # would select sentence
+        "type_overrides": {
+            "lab_report": {"strategy": "row", "chunk_size": 512, "chunk_overlap": 64}
+        },
+        "rows_per_chunk": 10,
+    }
+
+    captured_strategy: list[str] = []
+
+    async def capture_step(*args: object, **kwargs: object) -> None:
+        meta = kwargs.get("meta") or {}
+        if "strategy" in meta:
+            captured_strategy.append(meta["strategy"])
+
+    with (
+        patch(
+            "src.graphs.ingest_graph.nodes.node_chunk.get_collection",
+            new=AsyncMock(return_value=_make_collection(config)),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_chunk.update_step",
+            new=capture_step,
+        ),
+    ):
+        result = await node_chunk(state, _make_config(session))
+
+    assert captured_strategy == [ChunkStrategy.ROW.value]
+    # 25 rows / 10 per chunk → 3 chunks
+    assert len(result["chunks"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_type_overrides_applies_chunk_size_via_chunk_overlap_key() -> None:
+    """type_overrides uses chunk_overlap field name (ADR-015 ChunkStrategyConfig)."""
+    session = _make_session()
+    vr = ValidationResult(document_type="small_doc", quality_score=0.9)
+    state = _make_state(validation_result=vr)
+    config = {
+        "strategy": "recursive",
+        "chunk_size": 512,
+        "overlap": 64,
+        "type_overrides": {
+            "small_doc": {"strategy": "recursive", "chunk_size": 50, "chunk_overlap": 5}
+        },
+    }
+
+    with (
+        patch(
+            "src.graphs.ingest_graph.nodes.node_chunk.get_collection",
+            new=AsyncMock(return_value=_make_collection(config)),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_chunk.update_step",
+            new=AsyncMock(),
+        ),
+    ):
+        result = await node_chunk(state, _make_config(session))
+
+    # chunk_size=50 (small) produces more chunks than default 512
+    assert len(result["chunks"]) > 1
+
+
+@pytest.mark.asyncio
+async def test_type_overrides_unknown_strategy_falls_back_to_category() -> None:
+    """type_overrides with an unrecognised strategy falls back to select_strategy."""
+    session = _make_session()
+    vr = ValidationResult(document_type="mystery_doc", category="lab_results", quality_score=0.9)
+    state = _make_state(extracted_text=_ROW_TEXT, validation_result=vr)
+    config = {
+        "strategy": "recursive",
+        "strategy_by_category": {"lab_results": "row"},
+        "rows_per_chunk": 10,
+        "type_overrides": {
+            "mystery_doc": {"strategy": "nonexistent", "chunk_size": 512, "chunk_overlap": 64}
+        },
+    }
+
+    captured_strategy: list[str] = []
+
+    async def capture_step(*args: object, **kwargs: object) -> None:
+        meta = kwargs.get("meta") or {}
+        if "strategy" in meta:
+            captured_strategy.append(meta["strategy"])
+
+    with (
+        patch(
+            "src.graphs.ingest_graph.nodes.node_chunk.get_collection",
+            new=AsyncMock(return_value=_make_collection(config)),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_chunk.update_step",
+            new=capture_step,
+        ),
+    ):
+        await node_chunk(state, _make_config(session))
+
+    # Falls back to category-based: "row"
+    assert captured_strategy == [ChunkStrategy.ROW.value]

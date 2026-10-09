@@ -1741,8 +1741,22 @@ The existing `src/retrieval/reranker.py` is a no-op placeholder (returns results
 
 ### ADR-015: Adaptive Chunking -- Per-Document-Type Strategy
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-30
+**Implemented:** 2026-10-09
+
+**Implementation notes (2026-10-09):**
+- `ChunkStrategyConfig` added to `src/domain/schemas/collection.py` with fields `strategy`,
+  `chunk_size`, `chunk_overlap`, `separator_pattern`. Strategy literals aligned with the
+  `ChunkStrategy` enum: `"recursive"`, `"section_aware"`, `"sentence"`, `"row"`.
+- `ChunkConfig` gains `type_overrides: dict[str, ChunkStrategyConfig]` (new) for full
+  per-document-type override (strategy + size). Legacy `document_type_overrides` field
+  retained for backward compat with existing JSONB records (size-only overrides).
+- `node_chunk.py` resolution order: `type_overrides[doc_type]` → `strategy_by_category[category]`
+  → collection `strategy`. `type_overrides` also controls `chunk_size`/`chunk_overlap`.
+- All 4 strategy implementations (`recursive`, `section_aware`, `sentence`, `row`) and
+  `select_strategy()` already existed in `src/graphs/ingest_graph/chunking.py`.
+- 3 new unit tests in `tests/unit/ingest_graph/test_node_chunk.py` (28 total passing).
 
 **Context:**
 The current chunking node uses a single recursive strategy (512 tokens, overlap 64) for all document types. Medical documents have diverse structures: PDFs with hierarchical sections and headers, tables with drug interactions or lab reference ranges, clinical notes with terse sentence-level information. A one-size-fits-all strategy produces chunks that split tables mid-row or merge unrelated sections.
