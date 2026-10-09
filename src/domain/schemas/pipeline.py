@@ -43,6 +43,20 @@ class PromptConfig(BaseModel):
         description="Maximum tokens allocated to chunk context in the generation prompt (ADR-021).",
     )
     ab_test: ABTestConfig | None = Field(default=None)
+    # ADR-014: optional cross-encoder reranker. When set, node_rerank uses the
+    # model registered in models_registry with this ID (type=reranker) to re-score
+    # retrieved chunks between retrieve and grade_documents. When None, node_rerank
+    # is a pass-through (no reranking, no LLM call).
+    reranker_model_id: uuid.UUID | None = Field(
+        default=None,
+        description="UUID of a models_registry entry with type=reranker. Enables node_rerank.",
+    )
+    rerank_top_k: int | None = Field(
+        default=None,
+        ge=1,
+        le=50,
+        description="Truncate reranked results to this count. None keeps all results.",
+    )
 
 
 class GuardrailsConfig(BaseModel):

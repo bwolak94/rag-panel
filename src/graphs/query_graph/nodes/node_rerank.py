@@ -164,19 +164,34 @@ async def node_rerank(state: QueryState, config: dict[str, Any]) -> dict[str, An
 
     node_start = datetime.now(UTC)
 
-    # Resolve the LLM model record from the registry.
+    # ADR-014: prefer reranker_model_id from prompt_config (dedicated cross-encoder);
+    # fall back to llm_model_id for backward compat when rerank_enabled was set directly.
+    from uuid import UUID as _UUID
+
+    reranker_model_id_str: str | None = state.prompt_config.get("reranker_model_id")
+    model_lookup_id = state.llm_model_id
+    if reranker_model_id_str:
+        try:
+            model_lookup_id = _UUID(str(reranker_model_id_str))
+        except (ValueError, AttributeError):
+            logger.warning(
+                "node_rerank.invalid_reranker_model_id_fallback",
+                tenant_id=str(state.tenant_id),
+            )
+
+    # Resolve the model record from the registry.
     from sqlalchemy import select
 
     from src.db.models.models_registry import ModelsRegistry
 
-    result = await db.execute(select(ModelsRegistry).where(ModelsRegistry.id == state.llm_model_id))
+    result = await db.execute(select(ModelsRegistry).where(ModelsRegistry.id == model_lookup_id))
     model_record = result.scalar_one_or_none()
     if model_record is None:
         # Fail-safe: model missing → return original order.
         logger.warning(
             "node_rerank.model_not_found_fallback",
             tenant_id=str(state.tenant_id),
-            llm_model_id=str(state.llm_model_id),
+            model_lookup_id=str(model_lookup_id),
         )
         return {"retrieved_chunks": chunks}
 

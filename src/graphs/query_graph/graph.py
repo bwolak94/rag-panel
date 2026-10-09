@@ -206,8 +206,23 @@ async def invoke_query_graph(
     # collections the requesting user is not authorised to read.
     _assert_pipeline_collections_authorized(pipeline, ctx)
 
-    graph_rag_enabled: bool = bool((pipeline.prompt_config or {}).get("graph_rag_enabled", False))
+    prompt_cfg: dict[str, Any] = pipeline.prompt_config or {}
+    graph_rag_enabled: bool = bool(prompt_cfg.get("graph_rag_enabled", False))
     graph = build_query_graph(graph_rag_enabled=graph_rag_enabled)
+
+    # ADR-014: reranker is enabled when prompt_config carries a reranker_model_id.
+    # rerank_top_k comes from prompt_config as well; None means keep all results.
+    reranker_model_id_raw = prompt_cfg.get("reranker_model_id")
+    rerank_enabled: bool = bool(reranker_model_id_raw)
+    rerank_top_k_raw = prompt_cfg.get("rerank_top_k")
+    rerank_top_k: int | None
+    try:
+        rerank_top_k = int(float(rerank_top_k_raw)) if rerank_top_k_raw is not None else None
+    except (TypeError, ValueError):
+        logger.warning(
+            "invoke_query_graph.invalid_rerank_top_k", raw=type(rerank_top_k_raw).__name__
+        )
+        rerank_top_k = None
 
     _lf_update_span(
         {
@@ -225,9 +240,11 @@ async def invoke_query_graph(
         pipeline_id=pipeline.id,
         llm_model_id=pipeline.llm_model_id,
         collection_ids=list(pipeline.collection_ids),
-        prompt_config=pipeline.prompt_config or {},
+        prompt_config=prompt_cfg,
         guardrails_config=pipeline.guardrails or {},
         conversation_history=conversation_history,
+        rerank_enabled=rerank_enabled,
+        rerank_top_k=rerank_top_k,
     )
 
     graph_config: dict[str, Any] = {
