@@ -444,3 +444,119 @@ async def test_rewritten_query_used_when_available() -> None:
     assert "procedura przyjęcia do szpitala" in system_message
     # Original question should NOT appear in the prompt (rewritten_query takes precedence).
     assert "Jakie są procedury przyjęcia pacjenta?" not in system_message
+
+
+# ---------------------------------------------------------------------------
+# ADR-014: reranker_model_id activation via prompt_config
+# ---------------------------------------------------------------------------
+
+RERANKER_MODEL_ID = uuid.uuid4()
+
+
+def _make_state_with_reranker(
+    retrieved_chunks: list[dict] | None = None,
+    rerank_top_k: int | None = None,
+) -> QueryState:
+    """Make state with reranker_model_id in prompt_config (ADR-014 activation path)."""
+    return QueryState(
+        question="Jakie są procedury przyjęcia pacjenta?",
+        conversation_id=uuid.uuid4(),
+        tenant_id=TENANT_ID,
+        allowed_collection_ids=[COLLECTION_ID],
+        pipeline_id=PIPELINE_ID,
+        llm_model_id=LLM_MODEL_ID,
+        collection_ids=[COLLECTION_ID],
+        retrieved_chunks=retrieved_chunks if retrieved_chunks is not None else [],
+        rerank_enabled=True,  # set by invoke_query_graph from prompt_config
+        rerank_top_k=rerank_top_k,
+        prompt_config={"reranker_model_id": str(RERANKER_MODEL_ID)},
+    )
+
+
+def _make_reranker_model_record() -> MagicMock:
+    """Dedicated reranker model record (type=reranker, different from LLM)."""
+    record = MagicMock()
+    record.id = RERANKER_MODEL_ID
+    record.model_id = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    record.endpoint_url = "http://reranker:8080/v1"
+    return record
+
+
+def _make_db_with_reranker(model_record: object) -> AsyncMock:
+    """DB that returns the reranker model when queried by RERANKER_MODEL_ID."""
+    db = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = model_record
+    db.execute = AsyncMock(return_value=result)
+    return db
+
+
+@pytest.mark.asyncio
+async def test_reranker_model_id_in_prompt_config_uses_dedicated_model() -> None:
+    """When prompt_config.reranker_model_id is set, node_rerank looks up THAT model,
+    not state.llm_model_id (ADR-014)."""
+    chunks = [_make_chunk()]
+    scores = [{"chunk_index": 1, "score": 8}]
+
+    reranker_record = _make_reranker_model_record()
+    db = _make_db_with_reranker(reranker_record)
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response(scores))
+
+    state = _make_state_with_reranker(retrieved_chunks=chunks)
+    result = await node_rerank(state, _make_config(llm, db))
+
+    # Verify the reranker endpoint (not the LLM endpoint) was used.
+    call_kwargs = llm.chat_completion.call_args.kwargs
+    assert call_kwargs["base_url"] == "http://reranker:8080/v1"
+    assert call_kwargs["model"] == "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    assert len(result["retrieved_chunks"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_reranker_model_id_in_prompt_config_is_pass_through() -> None:
+    """When prompt_config has no reranker_model_id and rerank_enabled=False, node is a
+    pass-through even if other prompt_config keys are set (ADR-014 default off)."""
+    chunks = [_make_chunk(highlight_text="Chunk A"), _make_chunk(highlight_text="Chunk B")]
+
+    state = QueryState(
+        question="test",
+        conversation_id=uuid.uuid4(),
+        tenant_id=TENANT_ID,
+        allowed_collection_ids=[COLLECTION_ID],
+        pipeline_id=PIPELINE_ID,
+        llm_model_id=LLM_MODEL_ID,
+        collection_ids=[COLLECTION_ID],
+        retrieved_chunks=chunks,
+        rerank_enabled=False,
+        prompt_config={"temperature": 0.3},  # no reranker_model_id
+    )
+
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock()
+    db = AsyncMock()
+
+    result = await node_rerank(state, _make_config(llm, db))
+
+    assert result["retrieved_chunks"] == chunks
+    llm.chat_completion.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reranker_model_not_found_falls_back_gracefully() -> None:
+    """When the reranker_model_id references a missing model, original order is preserved."""
+    chunks = [_make_chunk(highlight_text="A"), _make_chunk(highlight_text="B")]
+
+    db = AsyncMock()
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = None  # model not found
+    db.execute = AsyncMock(return_value=result_mock)
+
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock()
+
+    state = _make_state_with_reranker(retrieved_chunks=chunks)
+    result = await node_rerank(state, _make_config(llm, db))
+
+    assert result["retrieved_chunks"] == chunks
+    llm.chat_completion.assert_not_called()

@@ -1696,8 +1696,14 @@ Dense vector search alone struggles with keyword-heavy medical queries (drug nam
 
 ### ADR-014: Cross-Encoder Reranker Node in Query Graph
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-30
+**Implemented:** 2026-10-09
+
+**Implementation notes (deviations from original spec):**
+- Reranker uses the LLM-as-scorer pattern via `llm.chat_completion()` (OpenAI-compatible rerank prompt) rather than a dedicated cross-encoder via raw httpx. Any `models_registry` entry (including a dedicated cross-encoder behind an OpenAI-compatible wrapper) works as the reranker model.
+- Activation: `prompt_config.reranker_model_id: UUID | None` in `PromptConfig` (as specified). `invoke_query_graph` seeds `state.rerank_enabled=True` and `state.rerank_top_k` from `prompt_config`. When `reranker_model_id` is present in `prompt_config`, `node_rerank` looks up THAT model (not `llm_model_id`) for the reranking call.
+- `node_rerank` was pre-wired in the graph topology; this ADR completes the activation path that was missing.
 
 **Context:**
 The existing `src/retrieval/reranker.py` is a no-op placeholder (returns results unchanged). Cross-encoder reranking between `retrieve` and `grade_documents` significantly improves precision by rescoring (query, chunk) pairs with a more expressive model. This is especially valuable in the medical domain where subtle semantic differences matter (e.g., "dosage for children" vs. "dosage for adults").
