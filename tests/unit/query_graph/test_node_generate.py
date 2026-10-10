@@ -19,6 +19,9 @@ Tests cover:
 - context_tokens_used returned in node result (ADR-021)
 - Early stopping: all chunks exceed budget → no_results=True, LLM not called (ADR-021)
 - Early stopping not triggered when graded_chunks already empty before trimming
+- ADR-019: shadow task scheduled when ab_test.enabled and session_factory present
+- ADR-019: shadow task skipped when session_factory absent
+- ADR-019: shadow task skipped when should_run_shadow returns False
 """
 
 from __future__ import annotations
@@ -824,3 +827,150 @@ async def test_early_stopping_not_triggered_when_graded_chunks_already_empty() -
     # node_generate proceeds to call LLM (empty context is intentional here).
     assert result.get("no_results") is not True
     llm.chat_completion.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# ADR-019: AB testing shadow path integration tests
+# ---------------------------------------------------------------------------
+
+_AB_CONFIG = {
+    "enabled": True,
+    "shadow_prompt_version": "v2",
+    "traffic_split": 1.0,  # always run shadow
+    "experiment_id": "exp_001",
+}
+
+
+def _make_config_with_session_factory(llm: object, db: object, session_factory: object) -> dict:
+    return {"configurable": {"llm": llm, "db": db, "session_factory": session_factory}}
+
+
+@pytest.mark.asyncio
+async def test_shadow_task_scheduled_when_ab_test_enabled_and_session_factory_present() -> None:
+    """ADR-019: schedule_shadow_task is called when ab_test.enabled=True and session_factory set."""
+    state = _make_state(
+        graded_chunks=[_make_chunk()],
+        prompt_config={"ab_test": _AB_CONFIG},
+    )
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm_json = json.dumps({"answer": "Odpowiedź.", "citations": []})
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
+    session_factory = MagicMock()
+
+    with (
+        patch(
+            "src.graphs.query_graph.nodes.node_generate._load_prompt",
+            return_value=FAKE_PROMPT,
+        ),
+        patch(
+            "src.graphs.query_graph.nodes.node_generate.should_run_shadow",
+            return_value=True,
+        ),
+        patch("src.graphs.query_graph.nodes.node_generate.schedule_shadow_task") as mock_schedule,
+    ):
+        await node_generate(state, _make_config_with_session_factory(llm, db, session_factory))
+
+    mock_schedule.assert_called_once()
+    call_kwargs = mock_schedule.call_args.kwargs
+    assert call_kwargs["session_factory"] is session_factory
+    assert call_kwargs["state"] is state
+
+
+@pytest.mark.asyncio
+async def test_shadow_task_not_scheduled_when_session_factory_absent() -> None:
+    """ADR-019: shadow is skipped when session_factory is not in configurable (no DB access).
+
+    Python short-circuits on `session_factory is not None` before ever calling
+    should_run_shadow — so mock_should_run must also assert_not_called().
+    """
+    state = _make_state(
+        graded_chunks=[_make_chunk()],
+        prompt_config={"ab_test": _AB_CONFIG},
+    )
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm_json = json.dumps({"answer": "Odpowiedź.", "citations": []})
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
+
+    with (
+        patch(
+            "src.graphs.query_graph.nodes.node_generate._load_prompt",
+            return_value=FAKE_PROMPT,
+        ),
+        patch(
+            "src.graphs.query_graph.nodes.node_generate.should_run_shadow",
+        ) as mock_should_run,
+        patch("src.graphs.query_graph.nodes.node_generate.schedule_shadow_task") as mock_schedule,
+    ):
+        # No session_factory in config — gate short-circuits before should_run_shadow
+        await node_generate(state, _make_config(llm, db))
+
+    mock_should_run.assert_not_called()
+    mock_schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_shadow_task_not_scheduled_when_should_run_shadow_false() -> None:
+    """ADR-019: shadow is skipped when traffic-split coin-flip returns False."""
+    state = _make_state(
+        graded_chunks=[_make_chunk()],
+        prompt_config={"ab_test": _AB_CONFIG},
+    )
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm_json = json.dumps({"answer": "Odpowiedź.", "citations": []})
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
+    session_factory = MagicMock()
+
+    with (
+        patch(
+            "src.graphs.query_graph.nodes.node_generate._load_prompt",
+            return_value=FAKE_PROMPT,
+        ),
+        patch(
+            "src.graphs.query_graph.nodes.node_generate.should_run_shadow",
+            return_value=False,  # coin-flip says no
+        ),
+        patch("src.graphs.query_graph.nodes.node_generate.schedule_shadow_task") as mock_schedule,
+    ):
+        await node_generate(state, _make_config_with_session_factory(llm, db, session_factory))
+
+    mock_schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_shadow_task_not_scheduled_when_ab_test_absent() -> None:
+    """ADR-019: shadow is skipped when prompt_config has no 'ab_test' key.
+
+    When ab_config is an empty dict (falsy), the guard short-circuits before
+    evaluating session_factory or should_run_shadow.
+    """
+    state = _make_state(
+        graded_chunks=[_make_chunk()],
+        prompt_config={},  # no ab_test key
+    )
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm_json = json.dumps({"answer": "Odpowiedź.", "citations": []})
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response(llm_json))
+    session_factory = MagicMock()
+
+    with (
+        patch(
+            "src.graphs.query_graph.nodes.node_generate._load_prompt",
+            return_value=FAKE_PROMPT,
+        ),
+        patch(
+            "src.graphs.query_graph.nodes.node_generate.should_run_shadow",
+        ) as mock_should_run,
+        patch("src.graphs.query_graph.nodes.node_generate.schedule_shadow_task") as mock_schedule,
+    ):
+        await node_generate(state, _make_config_with_session_factory(llm, db, session_factory))
+
+    mock_should_run.assert_not_called()
+    mock_schedule.assert_not_called()

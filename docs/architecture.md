@@ -1934,8 +1934,22 @@ The retrieval `score_threshold` is currently a static value (0.35 default, per A
 
 ### ADR-019: Prompt A/B Testing with Shadow Mode
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-30
+**Implemented:** 2026-10-10
+
+**Implementation notes (2026-10-10):**
+- `ABTestConfig` schema in `src/domain/schemas/pipeline.py` (`enabled`, `shadow_prompt_version`,
+  `traffic_split`, `experiment_id`).
+- Shadow orchestration in `src/domain/ab_testing_service.py` (`PromptABTestingService`,
+  `should_run_shadow()`, `schedule_shadow_task()`). Fire-and-forget `asyncio.Task` keeps
+  user latency unaffected; shadow answer text never stored (character length only).
+- `node_generate.py` triggers shadow after primary answer: reads `session_factory` from
+  `config["configurable"]`, calls `should_run_shadow()`, dispatches `schedule_shadow_task()`.
+- `ab_report.py` CLI aggregates `ab_test_results` table by `experiment_id`.
+- DB: `ab_test_results` table (`migration 0009_ab_test_results.py`).
+- Tests: `tests/unit/domain/test_ab_testing_service.py` (12 tests) +
+  3 new integration tests in `tests/unit/query_graph/test_node_generate.py`.
 
 **Context:**
 Prompt changes (classification, rewriting, generation) can significantly impact answer quality. Currently, deploying a new prompt version is all-or-nothing. There is no mechanism to compare two prompt versions on live traffic before committing to one.
@@ -1947,21 +1961,20 @@ Prompt changes (classification, rewriting, generation) can significantly impact 
 ```python
 class ABTestConfig(BaseModel):
     enabled: bool = False
-    shadow_prompt_version: str  # e.g., "generate_v3"
-    target_node: str  # e.g., "generate"
-    traffic_pct: float = 0.1  # 10% of queries run shadow
-    metrics_tag: str = "ab_test_gen_v3"
+    shadow_prompt_version: str = ""   # e.g., "v2" → loads generate_v2.md
+    traffic_split: float = 0.1        # 10% of queries run shadow
+    experiment_id: str = ""           # logical experiment identifier for ab_report
 ```
 
 2. **Shadow execution.** When A/B testing is enabled for a pipeline, the target node runs both the primary and shadow prompt versions. The primary result is always returned to the user. The shadow result is discarded after metrics are recorded. Shadow execution runs concurrently with the primary (via `asyncio.gather`) to minimize added latency.
 
-3. **Metrics recording in Langfuse.** Both runs are recorded as separate spans within the same trace. The shadow span is tagged with `ab_test=true` and the `metrics_tag`. This allows filtering and comparison in Langfuse dashboards: response quality scores, token usage, latency.
+3. **Metrics recording in `ab_test_results`.** Shadow answer length and latency are persisted to the `ab_test_results` table keyed by `experiment_id`. The `ab_report` CLI queries this table and prints a comparison report. Shadow answer text is never stored — only character counts and latencies are persisted (GDPR constraint).
 
 4. **Feature flag granularity.** A/B testing is per-pipeline, which means per-tenant (since pipelines are tenant-scoped). A tenant admin enables it; other tenants are unaffected.
 
 5. **No user-facing impact.** The shadow result is never shown to the user. The user always receives the primary prompt's output. This makes the feature safe to enable in production.
 
-6. **Automatic comparison report.** A CLI script `python -m src.scripts.ab_report --tag <metrics_tag>` queries Langfuse for traces with the tag and produces a comparison report (avg token usage, avg latency, faithfulness/relevance scores if eval annotations are present).
+6. **Automatic comparison report.** A CLI script `python -m src.scripts.ab_report --experiment-id <experiment_id>` queries `ab_test_results` and prints a comparison table: avg answer length, avg latency for control vs. shadow prompt versions.
 
 **Tenant isolation impact:** Shadow execution uses the same tenant-scoped context as the primary execution. No cross-tenant data. The shadow prompt version must be accessible to the tenant (stored in `src/graphs/prompts/`).
 
