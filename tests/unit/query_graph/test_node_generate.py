@@ -841,9 +841,7 @@ _AB_CONFIG = {
 }
 
 
-def _make_config_with_session_factory(
-    llm: object, db: object, session_factory: object
-) -> dict:
+def _make_config_with_session_factory(llm: object, db: object, session_factory: object) -> dict:
     return {"configurable": {"llm": llm, "db": db, "session_factory": session_factory}}
 
 
@@ -870,9 +868,7 @@ async def test_shadow_task_scheduled_when_ab_test_enabled_and_session_factory_pr
             "src.graphs.query_graph.nodes.node_generate.should_run_shadow",
             return_value=True,
         ),
-        patch(
-            "src.graphs.query_graph.nodes.node_generate.schedule_shadow_task"
-        ) as mock_schedule,
+        patch("src.graphs.query_graph.nodes.node_generate.schedule_shadow_task") as mock_schedule,
     ):
         await node_generate(state, _make_config_with_session_factory(llm, db, session_factory))
 
@@ -907,9 +903,7 @@ async def test_shadow_task_not_scheduled_when_session_factory_absent() -> None:
         patch(
             "src.graphs.query_graph.nodes.node_generate.should_run_shadow",
         ) as mock_should_run,
-        patch(
-            "src.graphs.query_graph.nodes.node_generate.schedule_shadow_task"
-        ) as mock_schedule,
+        patch("src.graphs.query_graph.nodes.node_generate.schedule_shadow_task") as mock_schedule,
     ):
         # No session_factory in config — gate short-circuits before should_run_shadow
         await node_generate(state, _make_config(llm, db))
@@ -941,9 +935,7 @@ async def test_shadow_task_not_scheduled_when_should_run_shadow_false() -> None:
             "src.graphs.query_graph.nodes.node_generate.should_run_shadow",
             return_value=False,  # coin-flip says no
         ),
-        patch(
-            "src.graphs.query_graph.nodes.node_generate.schedule_shadow_task"
-        ) as mock_schedule,
+        patch("src.graphs.query_graph.nodes.node_generate.schedule_shadow_task") as mock_schedule,
     ):
         await node_generate(state, _make_config_with_session_factory(llm, db, session_factory))
 
@@ -976,9 +968,7 @@ async def test_shadow_task_not_scheduled_when_ab_test_absent() -> None:
         patch(
             "src.graphs.query_graph.nodes.node_generate.should_run_shadow",
         ) as mock_should_run,
-        patch(
-            "src.graphs.query_graph.nodes.node_generate.schedule_shadow_task"
-        ) as mock_schedule,
+        patch("src.graphs.query_graph.nodes.node_generate.schedule_shadow_task") as mock_schedule,
     ):
         await node_generate(state, _make_config_with_session_factory(llm, db, session_factory))
 
