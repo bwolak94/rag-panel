@@ -176,6 +176,7 @@ class PromptABTestingService:
             prompt_text.replace("{{QUESTION}}", state.question)
             .replace("{{CONTEXT_CHUNKS}}", context_chunks_text)
             .replace("{{CONVERSATION_HISTORY}}", history_text)
+            .replace("{{RESPONSE_LANGUAGE}}", state.response_language or "")
         )
 
         shadow_start = datetime.now(UTC)
