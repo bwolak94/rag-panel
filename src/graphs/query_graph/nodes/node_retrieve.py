@@ -151,9 +151,13 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
     search_config: dict[str, Any] | None = getattr(collection, "search_config", None)
     search_mode = _resolve_search_mode(search_config)
     top_k: int = int((search_config or {}).get("top_k", _DEFAULT_TOP_K))
-    score_threshold: float = float(
-        (search_config or {}).get("score_threshold", _DEFAULT_SCORE_THRESHOLD)
-    )
+    # Pass None when not explicitly configured so RetrievalService._resolve_threshold
+    # can apply the service-level default rather than the local constant.
+    _raw_threshold = (search_config or {}).get("score_threshold")
+    score_threshold: float | None = float(_raw_threshold) if _raw_threshold is not None else None
+
+    # ADR-018: calibrated threshold from models_registry takes priority over score_threshold.
+    calibrated_threshold: float | None = model_record.score_threshold_calibrated
 
     # Build tenant context — include public collections so Qdrant read filter
     # spans both private and platform-wide public collections (ADR-020).
@@ -173,6 +177,7 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
                 score_threshold=score_threshold,
                 search_mode=search_mode,
                 query_text=q_text,
+                calibrated_threshold=calibrated_threshold,
             )
         except EmptyCollectionListError:
             raise
@@ -237,6 +242,12 @@ async def node_retrieve(state: QueryState, config: dict[str, Any]) -> dict[str, 
             "search_mode": search_mode.value,
             "top_k": top_k,
             "score_threshold": score_threshold,
+            "calibrated_threshold": calibrated_threshold,
+            "threshold_source": (
+                "calibrated"
+                if calibrated_threshold is not None
+                else ("config" if score_threshold is not None else "default")
+            ),
             "chunk_count": len(retrieved_chunks),
             "latency_ms": elapsed_ms,
             "cache_hit": "miss",

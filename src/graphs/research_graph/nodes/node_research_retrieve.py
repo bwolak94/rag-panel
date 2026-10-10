@@ -153,9 +153,11 @@ async def node_research_retrieve(state: ResearchState, config: dict[str, Any]) -
     search_config: dict[str, Any] | None = getattr(collection, "search_config", None)
     search_mode = _resolve_search_mode(search_config)
     top_k: int = int((search_config or {}).get("top_k", _DEFAULT_TOP_K))
-    score_threshold: float = float(
-        (search_config or {}).get("score_threshold", _DEFAULT_SCORE_THRESHOLD)
-    )
+    _raw_threshold = (search_config or {}).get("score_threshold")
+    score_threshold: float | None = float(_raw_threshold) if _raw_threshold is not None else None
+
+    # ADR-018: calibrated threshold from models_registry takes priority over score_threshold.
+    calibrated_threshold: float | None = model_record.score_threshold_calibrated
 
     tenant_ctx = TenantContext(
         tenant_id=state.tenant_id,
@@ -171,6 +173,7 @@ async def node_research_retrieve(state: ResearchState, config: dict[str, Any]) -
             score_threshold=score_threshold,
             search_mode=search_mode,
             query_text=sub_query,
+            calibrated_threshold=calibrated_threshold,
         )
     except EmptyCollectionListError:
         raise

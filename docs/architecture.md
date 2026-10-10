@@ -1887,8 +1887,19 @@ The `node_guardrails_output` node is currently rule-based (string matching, rege
 
 ### ADR-018: Score Threshold Auto-Calibration
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-30
+**Implemented:** 2026-10-10
+
+**Implementation notes (2026-10-10):**
+- `models_registry.score_threshold_calibrated` column added (migration `0006_model_threshold_calibration.py`).
+- `calibrate_threshold.py` CLI script computes F1-optimal threshold and writes to DB.
+- `RetrievalService.search()` accepts `calibrated_threshold: float | None`; resolution order:
+  calibrated → explicit `score_threshold` → `DEFAULT_SCORE_THRESHOLD`.
+- `node_retrieve.py`: reads `model_record.score_threshold_calibrated` and forwards it as
+  `calibrated_threshold` to `retrieval.search()`. Langfuse span records `threshold_source`.
+- Tests in `tests/unit/query_graph/test_node_retrieve.py` (2 new) and
+  `tests/unit/domain/test_calibration_service.py`.
 
 **Context:**
 The retrieval `score_threshold` is currently a static value (0.35 default, per ADR-009 decision 10) set in `rag_pipelines.prompt_config`. This value was chosen for BGE-M3 cosine similarity, but different embedding models produce different score distributions. When a collection uses a different model, the static threshold may be too aggressive (filtering out relevant chunks) or too permissive (admitting noise). Manual tuning per model is error-prone and does not adapt to corpus characteristics.
