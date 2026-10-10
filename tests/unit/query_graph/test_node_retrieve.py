@@ -371,3 +371,92 @@ async def test_unknown_search_mode_in_search_config_falls_back_to_dense() -> Non
 
     call_kwargs = retrieval.search.call_args.kwargs
     assert call_kwargs["search_mode"] is SearchMode.DENSE
+
+
+# ---------------------------------------------------------------------------
+# ADR-018: calibrated threshold tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_calibrated_threshold_passed_to_retrieval_when_set() -> None:
+    """ADR-018: score_threshold_calibrated from models_registry is forwarded to search()."""
+    collection = _make_collection()
+    model = _make_embedding_model()
+    model.score_threshold_calibrated = 0.72  # calibrated value
+
+    db = _make_db(collection, model)
+    embed_data = MagicMock()
+    embed_data.embedding = [0.1] * 768
+    embed_response = MagicMock()
+    embed_response.data = [embed_data]
+    llm = AsyncMock()
+    llm.embeddings = AsyncMock(return_value=embed_response)
+    retrieval = AsyncMock()
+    retrieval.search = AsyncMock(return_value=[])
+
+    state = _make_state()
+    config = _make_config(llm, db, retrieval)
+
+    await node_retrieve(state, config)
+
+    call_kwargs = retrieval.search.call_args.kwargs
+    assert call_kwargs["calibrated_threshold"] == 0.72
+
+
+@pytest.mark.asyncio
+async def test_calibrated_threshold_is_none_when_not_set() -> None:
+    """ADR-018: calibrated_threshold=None passed when model has no calibration data."""
+    collection = _make_collection()
+    model = _make_embedding_model()
+    model.score_threshold_calibrated = None  # no calibration run yet
+
+    db = _make_db(collection, model)
+    embed_data = MagicMock()
+    embed_data.embedding = [0.1] * 768
+    embed_response = MagicMock()
+    embed_response.data = [embed_data]
+    llm = AsyncMock()
+    llm.embeddings = AsyncMock(return_value=embed_response)
+    retrieval = AsyncMock()
+    retrieval.search = AsyncMock(return_value=[])
+
+    state = _make_state()
+    config = _make_config(llm, db, retrieval)
+
+    await node_retrieve(state, config)
+
+    call_kwargs = retrieval.search.call_args.kwargs
+    assert call_kwargs["calibrated_threshold"] is None
+
+
+@pytest.mark.asyncio
+async def test_calibrated_threshold_forwarded_in_cross_language_path() -> None:
+    """ADR-018: calibrated_threshold is forwarded in both primary and translated search calls."""
+    collection = _make_collection()
+    model = _make_embedding_model()
+    model.score_threshold_calibrated = 0.65
+
+    db = _make_db(collection, model)
+    embed_data = MagicMock()
+    embed_data.embedding = [0.1] * 768
+    embed_response = MagicMock()
+    embed_response.data = [embed_data]
+    llm = AsyncMock()
+    llm.embeddings = AsyncMock(return_value=embed_response)
+    retrieval = AsyncMock()
+    retrieval.search = AsyncMock(return_value=[])
+
+    # Enable cross-language retrieval path
+    state = _make_state()
+    state.cross_language_retrieval = True
+    state.translated_query = "patient admission procedures required documents"
+
+    config = _make_config(llm, db, retrieval)
+
+    await node_retrieve(state, config)
+
+    # Both primary and translated search calls must forward calibrated_threshold
+    assert retrieval.search.call_count == 2
+    for call in retrieval.search.call_args_list:
+        assert call.kwargs["calibrated_threshold"] == 0.65
