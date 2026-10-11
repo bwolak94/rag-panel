@@ -36,6 +36,7 @@ from src.db.models.ingestion_job import IngestionJob
 from src.db.repositories.entity_repository import EntityRepository
 from src.graphs.ingest_graph.helpers import update_step, utcnow
 from src.graphs.ingest_graph.state import IngestState
+from src.retrieval.service import RetrievalService
 
 logger = structlog.get_logger(__name__)
 
@@ -56,6 +57,7 @@ async def node_persist(state: IngestState, config: dict[str, Any]) -> dict[str, 
     """
     cfg = config.get("configurable", {})
     session: AsyncSession = cfg["db"]
+    retrieval: RetrievalService | None = cfg.get("retrieval")
     step_start = utcnow()
 
     try:
@@ -130,8 +132,35 @@ async def node_persist(state: IngestState, config: dict[str, Any]) -> dict[str, 
                 extracted_entities=state.extracted_entities,
             )
 
+        # ----------------------------------------------------------------
+        # ADR-024: Version promotion — Postgres part (must be in transaction).
+        # Sets is_current=False on the previous version's document row.
+        # The Qdrant part runs AFTER commit to prevent a CancelledError during
+        # the Qdrant network call from preventing session.commit() from running.
+        # ----------------------------------------------------------------
+        if state.previous_version_id is not None:
+            if retrieval is None:
+                raise IngestNodeError(
+                    "previous_version_id is set but 'retrieval' is not in config — "
+                    "version demotion requires RetrievalService"
+                )
+            await _demote_previous_version_postgres(session=session, state=state)
+
         await session.commit()
 
+        # ----------------------------------------------------------------
+        # ADR-024: Qdrant version demotion — best-effort, AFTER commit.
+        # Runs outside the transaction so a Qdrant error never rolls back the
+        # Postgres commit. Qdrant is eventually consistent with Postgres here.
+        # ----------------------------------------------------------------
+        if state.previous_version_id is not None and retrieval is not None:
+            await _demote_previous_version_qdrant(
+                session=session,
+                retrieval=retrieval,
+                state=state,
+            )
+
+        version_promoted = state.previous_version_id is not None
         elapsed = _elapsed_ms(step_start)
         await update_step(
             session,
@@ -143,6 +172,7 @@ async def node_persist(state: IngestState, config: dict[str, Any]) -> dict[str, 
                 "chunks_registry_rows": len(rows),
                 "entities_saved": entities_saved,
                 "relations_saved": relations_saved,
+                "version_promoted": version_promoted,
                 "latency_ms": elapsed,
             },
         )
@@ -154,6 +184,7 @@ async def node_persist(state: IngestState, config: dict[str, Any]) -> dict[str, 
                 "chunks_registry_rows": len(rows),
                 "entities_saved": entities_saved,
                 "relations_saved": relations_saved,
+                "version_promoted": version_promoted,
                 "latency_ms": elapsed,
             }
         )
@@ -218,6 +249,109 @@ async def node_persist(state: IngestState, config: dict[str, Any]) -> dict[str, 
             error=error_msg,
         )
         raise IngestNodeError(error_msg) from exc
+
+
+async def _demote_previous_version_postgres(
+    session: AsyncSession,
+    state: IngestState,
+) -> None:
+    """Set is_current=False on the previous version's Postgres document row.
+
+    Runs INSIDE the caller's transaction — committed atomically with the rest
+    of node_persist's writes.  The Qdrant counterpart must run AFTER commit
+    (see _demote_previous_version_qdrant).
+
+    Args:
+        session: Active AsyncSession (transaction owned by the caller).
+        state: Current IngestState — provides tenant_id and previous_version_id.
+    """
+    prev_id = state.previous_version_id
+    if prev_id is None:
+        return
+
+    await session.execute(
+        update(Document)
+        .where(
+            Document.id == prev_id,
+            Document.tenant_id == state.tenant_id,
+        )
+        .values(is_current=False)
+    )
+    logger.info(
+        "node_persist.version_demoted_postgres",
+        previous_version_id=str(prev_id),
+        document_id=str(state.document_id),
+    )
+
+
+async def _demote_previous_version_qdrant(
+    session: AsyncSession,
+    retrieval: RetrievalService,
+    state: IngestState,
+) -> None:
+    """Update is_current=False payload on the previous version's Qdrant points.
+
+    Runs AFTER session.commit() — best-effort.  Errors are logged but never
+    re-raised; Qdrant is eventually consistent with Postgres (the source of truth
+    for is_current).
+
+    Args:
+        session: AsyncSession — used only for the model-name lookup query.
+        retrieval: RetrievalService (required — caller must validate non-None).
+        state: Current IngestState — provides tenant_id, previous_version_id, collection_id.
+    """
+    prev_id = state.previous_version_id
+    if prev_id is None:
+        return
+
+    try:
+        from sqlalchemy import select
+
+        from src.db.models.collection import Collection
+        from src.db.models.models_registry import ModelsRegistry
+        from src.retrieval.schemas import TenantContext
+
+        model_name_q = (
+            select(ModelsRegistry.name)
+            .join(Collection, Collection.embedding_model_id == ModelsRegistry.id)
+            .where(
+                Collection.id == state.collection_id,
+                Collection.tenant_id == state.tenant_id,
+            )
+        )
+        model_name: str | None = (await session.execute(model_name_q)).scalar_one_or_none()
+        if model_name is None:
+            logger.warning(
+                "node_persist.version_demote_qdrant_skipped_no_model",
+                previous_version_id=str(prev_id),
+                collection_id=str(state.collection_id),
+            )
+            return
+
+        model_slug = model_name.lower().replace("-", "_").replace(" ", "_")
+        qdrant_collection = f"emb_{model_slug}"
+        ctx = TenantContext(
+            tenant_id=state.tenant_id,
+            allowed_collection_ids=[state.collection_id],
+        )
+        await retrieval.update_payload(
+            ctx=ctx,
+            qdrant_collection=qdrant_collection,
+            document_id=prev_id,
+            payload_patch={"is_current": False},
+        )
+        logger.info(
+            "node_persist.version_demoted_qdrant",
+            previous_version_id=str(prev_id),
+            qdrant_collection=qdrant_collection,
+        )
+    except Exception as exc:
+        # Best-effort: Qdrant failure must not block the ingest success path.
+        logger.warning(
+            "node_persist.version_demote_qdrant_failed",
+            previous_version_id=str(prev_id),
+            error_type=type(exc).__name__,
+        )
 
 
 async def _persist_entities(

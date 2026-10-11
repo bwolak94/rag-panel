@@ -209,3 +209,120 @@ async def test_persist_entity_tenant_id_always_from_state() -> None:
     call_kwargs = mock_persist_entities.call_args.kwargs
     # tenant_id must come from state, never from LLM output
     assert call_kwargs["tenant_id"] == TENANT_ID
+
+
+# ---------------------------------------------------------------------------
+# ADR-024: version promotion tests
+# ---------------------------------------------------------------------------
+
+PREVIOUS_DOC_ID = uuid.uuid4()
+
+
+def _make_config_with_retrieval(session: object, retrieval: object | None = None) -> dict:
+    cfg: dict = {"configurable": {"db": session}}
+    if retrieval is not None:
+        cfg["configurable"]["retrieval"] = retrieval
+    return cfg
+
+
+@pytest.mark.asyncio
+async def test_persist_version_promotion_called_when_previous_version_id_set() -> None:
+    """ADR-024: both demotion helpers are called when previous_version_id is set."""
+    session = _make_session()
+    state = _make_state(previous_version_id=PREVIOUS_DOC_ID)
+    mock_retrieval = AsyncMock()
+
+    with (
+        patch("src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_persist._demote_previous_version_postgres",
+            new=AsyncMock(),
+        ) as mock_pg,
+        patch(
+            "src.graphs.ingest_graph.nodes.node_persist._demote_previous_version_qdrant",
+            new=AsyncMock(),
+        ) as mock_qdrant,
+    ):
+        result = await node_persist(state, _make_config_with_retrieval(session, mock_retrieval))
+
+    assert result == {"status": "ready"}
+    mock_pg.assert_called_once()
+    mock_qdrant.assert_called_once()
+    assert mock_pg.call_args.kwargs["state"].previous_version_id == PREVIOUS_DOC_ID
+
+
+@pytest.mark.asyncio
+async def test_persist_version_promotion_skipped_when_no_previous_version() -> None:
+    """ADR-024: demotion helpers are NOT called when previous_version_id is None."""
+    session = _make_session()
+    state = _make_state(previous_version_id=None)
+
+    with (
+        patch("src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_persist._demote_previous_version_postgres",
+            new=AsyncMock(),
+        ) as mock_pg,
+        patch(
+            "src.graphs.ingest_graph.nodes.node_persist._demote_previous_version_qdrant",
+            new=AsyncMock(),
+        ) as mock_qdrant,
+    ):
+        await node_persist(state, _make_config(session))
+
+    mock_pg.assert_not_called()
+    mock_qdrant.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_persist_raises_when_retrieval_absent_and_previous_version_set() -> None:
+    """ADR-024: IngestNodeError is raised when previous_version_id is set but retrieval absent."""
+    from src.core.exceptions import IngestNodeError
+
+    session = _make_session()
+    state = _make_state(previous_version_id=PREVIOUS_DOC_ID)
+
+    with (
+        patch("src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()),
+        pytest.raises(IngestNodeError, match="retrieval"),
+    ):
+        # No retrieval in config
+        await node_persist(state, _make_config(session))
+
+
+@pytest.mark.asyncio
+async def test_persist_demote_updates_postgres_is_current_false() -> None:
+    """ADR-024: _demote_previous_version_postgres executes an UPDATE setting is_current=False."""
+    from src.graphs.ingest_graph.nodes.node_persist import _demote_previous_version_postgres
+
+    session = _make_session()
+    state = _make_state(previous_version_id=PREVIOUS_DOC_ID)
+
+    await _demote_previous_version_postgres(session=session, state=state)
+
+    session.execute.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_persist_demote_calls_retrieval_update_payload() -> None:
+    """ADR-024: _demote_previous_version_qdrant calls update_payload for previous version."""
+    from src.graphs.ingest_graph.nodes.node_persist import _demote_previous_version_qdrant
+
+    session = _make_session()
+    # Make session return a model name for the collection lookup
+    model_name_result = MagicMock()
+    model_name_result.scalar_one_or_none.return_value = "bge-m3"
+    session.execute = AsyncMock(return_value=model_name_result)
+
+    mock_retrieval = AsyncMock()
+    mock_retrieval.update_payload = AsyncMock()
+
+    state = _make_state(previous_version_id=PREVIOUS_DOC_ID)
+
+    await _demote_previous_version_qdrant(session=session, retrieval=mock_retrieval, state=state)
+
+    mock_retrieval.update_payload.assert_called_once()
+    call_kwargs = mock_retrieval.update_payload.call_args.kwargs
+    assert call_kwargs["document_id"] == PREVIOUS_DOC_ID
+    assert call_kwargs["payload_patch"] == {"is_current": False}
+    assert call_kwargs["qdrant_collection"] == "emb_bge_m3"

@@ -2202,7 +2202,8 @@ Section 19 anticipates a knowledge graph addition. This ADR specifies the approa
 
 ### ADR-024: Document Versioning (VersionRAG)
 
-**Status:** Proposed
+**Status:** Accepted
+**Implemented:** 2026-10-11
 **Date:** 2026-07-30
 
 **Context:**
