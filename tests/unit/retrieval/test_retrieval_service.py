@@ -594,3 +594,102 @@ async def test_search_hybrid_returns_at_most_top_k() -> None:
     )
 
     assert len(results) <= top_k
+
+
+# ---------------------------------------------------------------------------
+# ADR-024: version-aware retrieval tests
+# ---------------------------------------------------------------------------
+
+
+def _filter_has_is_current_condition(query_filter: Filter) -> bool:
+    """Recursively check whether the filter contains an is_current field condition.
+
+    Recurses through both ``must`` and ``should`` sub-filters so that the
+    public-collections branch (which uses SHOULD) is also inspected.
+    """
+    for cond in list(query_filter.must or []) + list(query_filter.should or []):
+        if hasattr(cond, "key") and cond.key == "is_current":
+            return True
+        if isinstance(cond, Filter) and _filter_has_is_current_condition(cond):
+            return True
+    return False
+
+
+@pytest.mark.asyncio
+async def test_search_default_includes_is_current_filter() -> None:
+    """ADR-024: by default (include_historical_versions=False), is_current filter is applied."""
+    service, client = make_service()
+    client.query_points.return_value = make_query_response([])
+
+    ctx = make_ctx()
+    await service.search(ctx, "emb_bge_m3", [0.1, 0.2])
+
+    call_kwargs: dict[str, Any] = client.query_points.call_args.kwargs
+    query_filter: Filter = call_kwargs["query_filter"]
+    assert _filter_has_is_current_condition(query_filter), (
+        "is_current filter must be present by default (ADR-024)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_include_historical_skips_is_current_filter() -> None:
+    """ADR-024: include_historical_versions=True must NOT add is_current filter."""
+    service, client = make_service()
+    client.query_points.return_value = make_query_response([])
+
+    ctx = make_ctx()
+    await service.search(ctx, "emb_bge_m3", [0.1, 0.2], include_historical_versions=True)
+
+    call_kwargs: dict[str, Any] = client.query_points.call_args.kwargs
+    query_filter: Filter = call_kwargs["query_filter"]
+    assert not _filter_has_is_current_condition(query_filter), (
+        "is_current filter must NOT be present when include_historical_versions=True"
+    )
+
+
+@pytest.mark.tenant_isolation
+@pytest.mark.asyncio
+async def test_update_payload_uses_tenant_scoped_filter() -> None:
+    """ADR-024: update_payload filter must include tenant_id and document_id."""
+    service, client = make_service()
+    client.set_payload = AsyncMock()
+
+    ctx = make_ctx()
+    doc_id = uuid.uuid4()
+    await service.update_payload(ctx, "emb_bge_m3", doc_id, {"is_current": False})
+
+    assert client.set_payload.called
+    call_kwargs: dict[str, Any] = client.set_payload.call_args.kwargs
+    selector = call_kwargs["points"]
+    flt: Filter = selector.filter
+
+    must_conditions = flt.must or []
+    keys = [c.key for c in must_conditions if hasattr(c, "key")]
+    assert "tenant_id" in keys, "tenant_id missing from update_payload filter"
+    assert "document_id" in keys, "document_id missing from update_payload filter"
+
+
+@pytest.mark.asyncio
+async def test_update_payload_sets_correct_payload() -> None:
+    """ADR-024: update_payload passes payload_patch verbatim to set_payload."""
+    service, client = make_service()
+    client.set_payload = AsyncMock()
+
+    ctx = make_ctx()
+    doc_id = uuid.uuid4()
+    patch_data = {"is_current": False}
+    await service.update_payload(ctx, "emb_bge_m3", doc_id, patch_data)
+
+    call_kwargs: dict[str, Any] = client.set_payload.call_args.kwargs
+    assert call_kwargs["payload"] == patch_data
+
+
+@pytest.mark.asyncio
+async def test_update_payload_raises_qdrant_unavailable_on_error() -> None:
+    """ADR-024: update_payload wraps Qdrant errors as QdrantUnavailableError."""
+    service, client = make_service()
+    client.set_payload = AsyncMock(side_effect=RuntimeError("connection refused"))
+
+    ctx = make_ctx()
+    with pytest.raises(QdrantUnavailableError):
+        await service.update_payload(ctx, "emb_bge_m3", uuid.uuid4(), {"is_current": False})

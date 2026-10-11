@@ -168,6 +168,18 @@ def build_tenant_delete_filter(tenant_id: str) -> Filter:
     )
 
 
+def build_is_current_filter() -> Filter:
+    """Build a filter that restricts results to the current document version.
+
+    Used by RetrievalService.search() when include_historical_versions=False (default).
+    Combine with the mandatory tenant+RBAC filter via merge_filters().
+
+    Returns:
+        Filter matching only points where payload["is_current"] == True.
+    """
+    return Filter(must=[FieldCondition(key="is_current", match=MatchValue(value=True))])
+
+
 def merge_filters(mandatory: Filter, additional: Filter | None) -> Filter:
     """Extend mandatory filter with additional conditions. Never replaces mandatory.
 

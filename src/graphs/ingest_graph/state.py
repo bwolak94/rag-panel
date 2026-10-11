@@ -76,6 +76,14 @@ class IngestState(BaseModel):
     chunks: list[ChunkData] | None = None
     embeddings: list[list[float]] | None = None
     point_ids: list[UUID] | None = None
+    # ADR-024: Document versioning.
+    # version_group_id is copied from the previous version (or defaults to document_id).
+    # Set by the worker before launching the graph when version_of is supplied.
+    version_group_id: UUID | None = None
+    # previous_version_id: document_id of the version being superseded (if any).
+    # Used by node_persist to demote the old version's Qdrant points to is_current=false.
+    previous_version_id: UUID | None = None
+
     # Graph RAG enrichment — set by node_extract_entities (opt-in per collection).
     # Each element is {"entities": [...], "relations": [...]} from one extraction batch.
     # None when graph_rag_enabled=False or extraction was skipped/failed.

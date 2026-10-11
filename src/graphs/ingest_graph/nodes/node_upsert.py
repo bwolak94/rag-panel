@@ -121,6 +121,10 @@ async def node_upsert(state: IngestState, config: dict[str, Any]) -> dict[str, A
                         "section": chunk.section,
                         "text": chunk.text,
                         "created_at": now_ts,
+                        # ADR-024: version-aware retrieval fields.
+                        # version_group_id defaults to document_id for unversioned documents.
+                        "version_group_id": str(state.version_group_id or state.document_id),
+                        "is_current": True,
                     },
                 )
             )

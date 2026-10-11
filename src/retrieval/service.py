@@ -40,6 +40,7 @@ from tenacity import (
 from src.retrieval.exceptions import EmptyCollectionListError, QdrantUnavailableError
 from src.retrieval.filters import (
     build_document_delete_filter,
+    build_is_current_filter,
     build_read_filter,
     build_tenant_delete_filter,
     merge_filters,
@@ -267,6 +268,7 @@ class RetrievalService:
         search_mode: SearchMode = SearchMode.DENSE,
         query_text: str | None = None,
         calibrated_threshold: float | None = None,
+        include_historical_versions: bool = False,
     ) -> list[RetrievalResult]:
         """Search for semantically similar chunks within tenant+collections scope.
 
@@ -291,6 +293,8 @@ class RetrievalService:
             calibrated_threshold: Calibrated threshold from the last eval sweep.
                 Fetched by the caller from ModelService.get_calibrated_threshold().
                 Takes precedence over score_threshold when not None.
+            include_historical_versions: When False (default), restricts results to
+                is_current=true points only (ADR-024). Set True for audit/comparison queries.
 
         Returns:
             List of RetrievalResult ordered by score descending.
@@ -315,6 +319,7 @@ class RetrievalService:
                 top_k=top_k,
                 score_threshold=effective_threshold,
                 additional_filter=additional_filter,
+                include_historical_versions=include_historical_versions,
             )
 
         from qdrant_client.models import Filter as QdrantFilter
@@ -328,6 +333,9 @@ class RetrievalService:
             read_filter,
             additional_filter if isinstance(additional_filter, QdrantFilter) else None,
         )
+        # ADR-024: exclude superseded document versions unless explicitly requested.
+        if not include_historical_versions:
+            combined = merge_filters(combined, build_is_current_filter())
 
         logger.debug(
             "retrieval.search",
@@ -361,6 +369,7 @@ class RetrievalService:
         top_k: int = 8,
         score_threshold: float = 0.0,
         additional_filter: object | None = None,
+        include_historical_versions: bool = False,
     ) -> list[RetrievalResult]:
         """Hybrid search using Qdrant-native sparse + dense prefetch with RRF fusion.
 
@@ -383,6 +392,8 @@ class RetrievalService:
             top_k: Number of final results to return. Default 8.
             score_threshold: Applied to the dense retrieval pass only.
             additional_filter: Optional Qdrant Filter merged with mandatory filter.
+            include_historical_versions: When False (default), restricts to is_current=true
+                (ADR-024). Set True for audit/comparison queries.
 
         Returns:
             List of RetrievalResult ordered by RRF score descending, length <= top_k.
@@ -402,6 +413,9 @@ class RetrievalService:
             read_filter,
             additional_filter if isinstance(additional_filter, QdrantFilter) else None,
         )
+        # ADR-024: exclude superseded document versions unless explicitly requested.
+        if not include_historical_versions:
+            combined = merge_filters(combined, build_is_current_filter())
 
         logger.debug(
             "retrieval.search_hybrid",
@@ -660,6 +674,60 @@ class RetrievalService:
             wait=True,
         )
 
+    @retry(
+        stop=stop_after_attempt(2),
+        wait=wait_combine(wait_fixed(1), wait_random(0, 0.1)),
+        retry=retry_if_not_exception_type((ValueError, TypeError, AttributeError, KeyError)),
+        reraise=True,
+    )
+    async def update_payload(
+        self,
+        ctx: TenantContext,
+        qdrant_collection: str,
+        document_id: UUID,
+        payload_patch: dict[str, Any],
+    ) -> None:
+        """Overwrite specific payload fields on all points belonging to a document.
+
+        Used by node_persist to set ``is_current=false`` on the previous version's
+        points when a new version is promoted (ADR-024).
+
+        Tenant isolation: every call validates that ``document_id`` belongs to
+        ``ctx.tenant_id`` via the write filter — no cross-tenant payload updates.
+
+        Args:
+            ctx: Caller's TenantContext from verified JWT.
+            qdrant_collection: Physical Qdrant collection name.
+            document_id: The document whose points to update.
+            payload_patch: Dict of payload fields to overwrite (merged with existing payload).
+
+        Raises:
+            QdrantUnavailableError: If Qdrant unreachable after retries.
+        """
+        from qdrant_client.models import Filter as QdrantFilter
+        from qdrant_client.models import FilterSelector
+
+        write_filter = build_document_delete_filter(
+            tenant_id=str(ctx.tenant_id),
+            document_id=str(document_id),
+        )
+        flt: QdrantFilter | None = write_filter if isinstance(write_filter, QdrantFilter) else None
+        logger.debug(
+            "retrieval.update_payload",
+            tenant_id=str(ctx.tenant_id),
+            document_id=str(document_id),
+            fields=list(payload_patch.keys()),
+        )
+        try:
+            await self._client.set_payload(
+                collection_name=qdrant_collection,
+                payload=payload_patch,
+                points=FilterSelector(filter=flt),
+                wait=True,
+            )
+        except Exception as exc:
+            raise QdrantUnavailableError(str(exc)) from exc
+
     async def delete_by_document(
         self,
         ctx: TenantContext,
@@ -783,33 +851,35 @@ class RetrievalService:
         distance_enum = Distance.COSINE if distance == "Cosine" else Distance.DOT
 
         existing = {c.name for c in (await self._client.get_collections()).collections}
-        if collection_name in existing:
-            logger.debug("ensure_collection.already_exists", collection=collection_name)
-            return
+        if collection_name not in existing:
+            await self._client.create_collection(
+                collection_name=collection_name,
+                vectors_config={"dense": VectorParams(size=vector_size, distance=distance_enum)},
+                sparse_vectors_config={"sparse": SparseVectorParams()},
+            )
+            # Create payload indexes for mandatory filter fields (new collections only).
+            for field_name in ("tenant_id", "collection_id", "document_id"):
+                await self._client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field_name,
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
 
-        await self._client.create_collection(
-            collection_name=collection_name,
-            vectors_config={"dense": VectorParams(size=vector_size, distance=distance_enum)},
-            sparse_vectors_config={"sparse": SparseVectorParams()},
-        )
-        # Create payload indexes for mandatory filter fields
+        # ADR-024: version-aware retrieval indexes — created unconditionally so that
+        # collections created before this ADR are also upgraded.  Qdrant treats
+        # create_payload_index as idempotent (safe to call on existing indexes).
         await self._client.create_payload_index(
             collection_name=collection_name,
-            field_name="tenant_id",
-            field_schema=PayloadSchemaType.KEYWORD,
+            field_name="is_current",
+            field_schema=PayloadSchemaType.BOOL,
         )
         await self._client.create_payload_index(
             collection_name=collection_name,
-            field_name="collection_id",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-        await self._client.create_payload_index(
-            collection_name=collection_name,
-            field_name="document_id",
+            field_name="version_group_id",
             field_schema=PayloadSchemaType.KEYWORD,
         )
         logger.info(
-            "ensure_collection.created",
+            "ensure_collection.ready",
             collection=collection_name,
             vector_size=vector_size,
             distance=distance,

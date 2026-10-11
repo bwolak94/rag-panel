@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import (
     ARRAY,
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -29,7 +30,16 @@ class Document(Base, TimestampMixin):
     """
 
     __tablename__ = "documents"
-    __table_args__ = (UniqueConstraint("tenant_id", "sha256", name="idx_documents_sha256"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "sha256", name="idx_documents_sha256"),
+        # ADR-024: ensures no duplicate version numbers within a version group per tenant.
+        UniqueConstraint(
+            "tenant_id",
+            "version_group_id",
+            "version_number",
+            name="uq_documents_version_group_number",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
@@ -86,6 +96,22 @@ class Document(Base, TimestampMixin):
     # Denormalised counter — updated in the same transaction as the new version row.
     # Avoids a COUNT(*) query on every document list response.
     version_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    # ADR-024: Document versioning.
+    # version_group_id is shared by all versions of the same logical document.
+    # Defaults to the document's own `id` for unversioned documents.
+    # nullable=True here because migration 0022 adds the column in two steps:
+    # first nullable (to allow backfill), then NOT NULL (via ALTER COLUMN).
+    # New rows must always supply this value explicitly.
+    version_group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    # Sequential version number within the version group (1-based).
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    # True for the latest version in a group; False for superseded versions.
+    # Default True so single documents (no version_of) start as current.
+    is_current: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), index=True
+    )
     # Semantic dedup — populated by node_semantic_dedup (migration 0008).
     dedup_embedding: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)
     dedup_similarity: Mapped[float | None] = mapped_column(nullable=True)
