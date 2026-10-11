@@ -25,6 +25,7 @@ Security / GDPR:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -377,17 +378,14 @@ async def node_extract_entities(state: IngestState, config: dict[str, Any]) -> d
             }
         )
         # Best-effort step update (may fail if DB is also unavailable)
-        import contextlib
-
-        async with contextlib.AsyncExitStack():
-            with contextlib.suppress(Exception):
-                await update_step(
-                    session,
-                    state.job_id,
-                    stage="extract_entities",
-                    status="warning",
-                    started_at=step_start,
-                    error=f"extract_entities_nonfatal: {type(exc).__name__}",
-                )
+        with contextlib.suppress(Exception):
+            await update_step(
+                session,
+                state.job_id,
+                stage="extract_entities",
+                status="warning",
+                started_at=step_start,
+                error=f"extract_entities_nonfatal: {type(exc).__name__}",
+            )
         # Return None — pipeline continues without entity data
         return {"extracted_entities": None}

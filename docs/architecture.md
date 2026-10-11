@@ -2147,8 +2147,9 @@ type = "independence"
 
 ### ADR-023: Graph RAG -- Entity Extraction and Knowledge Graph
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-30
+**Implemented:** 2026-10-11
 
 **Context:**
 Medical documents contain structured relationships between entities: drugs interact with other drugs, conditions are treated by procedures, procedures reference ICD codes. Vector similarity alone cannot answer multi-hop questions like "What drugs interact with medications prescribed for condition X?" because the answer spans multiple chunks that may not be semantically similar to the query.

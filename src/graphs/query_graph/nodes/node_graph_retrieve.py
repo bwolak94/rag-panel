@@ -36,12 +36,11 @@ from uuid import UUID
 
 import structlog
 from langfuse import observe
-from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.exceptions import QueryNodeError
 from src.core.langfuse_client import update_span_metadata as _lf_update_span
-from src.db.models.knowledge_graph import EntityRelation, MedicalEntity
+from src.db.repositories.entity_repository import EntityRepository
 from src.graphs.query_graph.state import QueryState
 
 logger = structlog.get_logger(__name__)
@@ -170,23 +169,21 @@ async def node_graph_retrieve(state: QueryState, config: dict[str, Any]) -> dict
         return {"graph_context": None}
 
     try:
-        # ----------------------------------------------------------------
-        # Step 1: Find matching entities scoped to this tenant
-        # ----------------------------------------------------------------
-        # Build OR conditions: canonical_name ILIKE any token,
-        # OR surface_forms contains any token (array overlap via ANY).
+        from collections import defaultdict
 
-        ilike_filters = [MedicalEntity.canonical_name.ilike(f"%{token}%") for token in tokens]
+        from src.db.models.knowledge_graph import EntityRelation, MedicalEntity
 
-        entity_result = await db.execute(
-            select(MedicalEntity)
-            .where(
-                MedicalEntity.tenant_id == state.tenant_id,
-                or_(*ilike_filters),
-            )
-            .limit(_MAX_ENTITY_MATCHES)
+        repo = EntityRepository(db)
+
+        # ----------------------------------------------------------------
+        # Step 1: Find matching entities scoped to tenant + collection_ids
+        # ----------------------------------------------------------------
+        matched_entities: list[MedicalEntity] = await repo.find_by_tokens(
+            tenant_id=state.tenant_id,
+            collection_ids=list(state.collection_ids),
+            tokens=tokens,
+            limit=_MAX_ENTITY_MATCHES,
         )
-        matched_entities: list[MedicalEntity] = list(entity_result.scalars().all())
 
         if not matched_entities:
             elapsed_ms = int((datetime.now(UTC) - node_start).total_seconds() * 1000)
@@ -212,18 +209,11 @@ async def node_graph_retrieve(state: QueryState, config: dict[str, Any]) -> dict
         # ----------------------------------------------------------------
         # Step 2: Fetch relations for matched entities (source OR target)
         # ----------------------------------------------------------------
-        relation_result = await db.execute(
-            select(EntityRelation)
-            .where(
-                EntityRelation.tenant_id == state.tenant_id,
-                or_(
-                    EntityRelation.source_entity_id.in_(entity_ids),
-                    EntityRelation.target_entity_id.in_(entity_ids),
-                ),
-            )
-            .limit(_MAX_RELATIONS)
+        relations: list[EntityRelation] = await repo.find_relations_for_entities(
+            tenant_id=state.tenant_id,
+            entity_ids=entity_ids,
+            limit=_MAX_RELATIONS,
         )
-        relations: list[EntityRelation] = list(relation_result.scalars().all())
 
         # ----------------------------------------------------------------
         # Step 3: Build id → entity lookup for relation labelling
@@ -239,13 +229,10 @@ async def node_graph_retrieve(state: QueryState, config: dict[str, Any]) -> dict
         missing_ids = all_referenced_ids - set(entity_ids)
         extra_entities: list[MedicalEntity] = []
         if missing_ids:
-            extra_result = await db.execute(
-                select(MedicalEntity).where(
-                    MedicalEntity.tenant_id == state.tenant_id,
-                    MedicalEntity.id.in_(missing_ids),
-                )
+            extra_entities = await repo.find_by_ids(
+                tenant_id=state.tenant_id,
+                entity_ids=missing_ids,
             )
-            extra_entities = list(extra_result.scalars().all())
 
         id_to_entity: dict[UUID, MedicalEntity] = {
             e.id: e for e in [*matched_entities, *extra_entities]
@@ -255,8 +242,6 @@ async def node_graph_retrieve(state: QueryState, config: dict[str, Any]) -> dict
         # Step 4: Assemble graph_context list
         # ----------------------------------------------------------------
         # Group relations by matched entity
-        from collections import defaultdict
-
         related_map: dict[UUID, list[dict[str, Any]]] = defaultdict(list)
         for rel in relations:
             # From the perspective of the source entity

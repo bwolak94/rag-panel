@@ -28,6 +28,7 @@ from sqlalchemy import (
     Index,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -50,6 +51,13 @@ class MedicalEntity(Base, TimestampMixin):
 
     __tablename__ = "medical_entities"
     __table_args__ = (
+        # Idempotency: re-ingesting the same document must not create duplicates.
+        UniqueConstraint(
+            "document_id",
+            "canonical_name",
+            "entity_type",
+            name="uq_medical_entities_natural_key",
+        ),
         # Tenant-scoped lookups — most common query pattern
         Index("ix_medical_entities_tenant_id", "tenant_id"),
         # Entity-type filter within a tenant
@@ -138,6 +146,14 @@ class EntityRelation(Base, TimestampMixin):
 
     __tablename__ = "entity_relations"
     __table_args__ = (
+        # Idempotency: re-ingesting the same document must not create duplicate edges.
+        UniqueConstraint(
+            "source_entity_id",
+            "target_entity_id",
+            "relation_type",
+            "document_id",
+            name="uq_entity_relations_natural_key",
+        ),
         Index("ix_entity_relations_tenant_id", "tenant_id"),
         Index("ix_entity_relations_source_entity_id", "source_entity_id"),
         Index("ix_entity_relations_target_entity_id", "target_entity_id"),
