@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.api.schemas.collection import (
+from src.domain.schemas.collection import (
     ChunkConfig,
     ChunkStrategyConfig,
     LegacyChunkSizeOverride,
@@ -86,6 +86,22 @@ class TestChunkConfigValidation:
                     "pdf": {"chunk_size": 200, "overlap": 200},  # overlap >= chunk_size
                 },
             )
+
+    def test_graph_rag_enabled_defaults_to_false(self) -> None:
+        """ADR-023: graph_rag_enabled defaults to False — no overhead for standard pipelines."""
+        cfg = ChunkConfig()
+        assert cfg.graph_rag_enabled is False
+
+    def test_graph_rag_enabled_can_be_set_true(self) -> None:
+        """ADR-023: graph_rag_enabled=True opts in entity extraction for this collection."""
+        cfg = ChunkConfig(graph_rag_enabled=True)
+        assert cfg.graph_rag_enabled is True
+
+    def test_graph_rag_enabled_round_trips_through_dict(self) -> None:
+        """ADR-023: graph_rag_enabled survives JSONB serialisation round-trip."""
+        original = ChunkConfig(graph_rag_enabled=True)
+        rehydrated = ChunkConfig(**original.model_dump())
+        assert rehydrated.graph_rag_enabled is True
 
 
 class TestChunkStrategyConfigValidation:

@@ -60,6 +60,12 @@ class ChunkConfig(BaseModel):
     # Backward-compat: flat size-only overrides from pre-ADR-015 collections.
     # Prefer type_overrides for new configurations.
     document_type_overrides: dict[str, LegacyChunkSizeOverride] = Field(default_factory=dict)
+    # ADR-023: opt-in Graph RAG entity extraction during ingest.
+    # When True, node_extract_entities runs after node_chunk and entities are
+    # persisted to medical_entities / entity_relations tables.  node_graph_retrieve
+    # is added to the query graph in parallel when prompt_config also has
+    # graph_rag_enabled=True.  Defaults to False — no overhead for standard pipelines.
+    graph_rag_enabled: bool = False
 
     @model_validator(mode="after")
     def overlap_less_than_chunk_size(self) -> ChunkConfig:

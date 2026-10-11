@@ -118,3 +118,94 @@ async def test_persist_commits_session() -> None:
         await node_persist(state, _make_config(session))
 
     session.commit.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# ADR-023: entity persistence path
+# ---------------------------------------------------------------------------
+
+_ENTITY_BATCH = [
+    {
+        "entities": [
+            {
+                "type": "drug",
+                "name": "metformin",
+                "surface_forms": ["Metformin", "metformin"],
+                "icd_code": None,
+                "atc_code": "A10BA02",
+                "confidence": 0.95,
+                "chunk_ids": ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"],
+            }
+        ],
+        "relations": [
+            {
+                "source_name": "metformin",
+                "target_name": "type 2 diabetes",
+                "relation_type": "treats",
+                "confidence": 0.9,
+                "evidence_text_hash": "abc123",
+            }
+        ],
+    }
+]
+
+
+@pytest.mark.asyncio
+async def test_persist_calls_entity_insert_when_extracted_entities_set() -> None:
+    """ADR-023: when extracted_entities is not None, _persist_entities is called."""
+    session = _make_session()
+    state = _make_state(extracted_entities=_ENTITY_BATCH)
+
+    with (
+        patch("src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_persist._persist_entities",
+            new=AsyncMock(return_value=(1, 1)),
+        ) as mock_persist_entities,
+    ):
+        result = await node_persist(state, _make_config(session))
+
+    assert result == {"status": "ready"}
+    mock_persist_entities.assert_called_once()
+    call_kwargs = mock_persist_entities.call_args.kwargs
+    assert call_kwargs["tenant_id"] == TENANT_ID
+    assert call_kwargs["document_id"] == DOCUMENT_ID
+    assert call_kwargs["extracted_entities"] == _ENTITY_BATCH
+
+
+@pytest.mark.asyncio
+async def test_persist_skips_entity_insert_when_extracted_entities_none() -> None:
+    """ADR-023: when extracted_entities is None, _persist_entities is not called."""
+    session = _make_session()
+    state = _make_state(extracted_entities=None)
+
+    with (
+        patch("src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_persist._persist_entities",
+            new=AsyncMock(return_value=(0, 0)),
+        ) as mock_persist_entities,
+    ):
+        await node_persist(state, _make_config(session))
+
+    mock_persist_entities.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_persist_entity_tenant_id_always_from_state() -> None:
+    """ADR-023: tenant_id passed to _persist_entities comes from state, not from LLM output."""
+    session = _make_session()
+    state = _make_state(extracted_entities=_ENTITY_BATCH)
+
+    with (
+        patch("src.graphs.ingest_graph.nodes.node_persist.update_step", new=AsyncMock()),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_persist._persist_entities",
+            new=AsyncMock(return_value=(1, 0)),
+        ) as mock_persist_entities,
+    ):
+        await node_persist(state, _make_config(session))
+
+    call_kwargs = mock_persist_entities.call_args.kwargs
+    # tenant_id must come from state, never from LLM output
+    assert call_kwargs["tenant_id"] == TENANT_ID
