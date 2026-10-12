@@ -604,3 +604,175 @@ def test_parse_vision_response_missing_key_values_defaults_to_empty_list() -> No
     result = _parse_vision_response(raw)
     assert result is not None
     assert result["key_values"] == []
+
+
+# ---------------------------------------------------------------------------
+# ADR-025: MinIO image storage and max_vision_images limit
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_vision_chunk_has_source_type_vision() -> None:
+    """Each vision chunk must carry source_type='vision' (ADR-025)."""
+    session = _make_session()
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock(
+        return_value=_make_llm_response("Chest X-ray showing bilateral infiltrates.")
+    )
+    collection = _make_collection(vision_extraction_enabled=True)
+    model = _make_model()
+
+    with (
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision.get_collection",
+            new=AsyncMock(return_value=collection),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision.get_model",
+            new=AsyncMock(return_value=model),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision.update_step",
+            new=AsyncMock(),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision._load_prompt",
+            return_value="prompt",
+        ),
+    ):
+        state = _make_state(extracted_sections=[_make_image_section(0)])
+        result = await node_extract_vision(state, _make_config(session, llm))
+
+    vision_chunks = [c for c in result["chunks"] if c.chunk_index >= 1]
+    assert len(vision_chunks) == 1
+    assert vision_chunks[0].source_type == "vision"
+
+
+@pytest.mark.asyncio
+async def test_vision_chunk_stores_image_to_minio() -> None:
+    """When minio is in config, each processed image is stored to MinIO (ADR-025 §4)."""
+    import base64
+
+    session = _make_session()
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response("MRI showing lesion."))
+    collection = _make_collection(vision_extraction_enabled=True)
+    model = _make_model()
+    minio = MagicMock()
+
+    with (
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision.get_collection",
+            new=AsyncMock(return_value=collection),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision.get_model",
+            new=AsyncMock(return_value=model),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision.update_step",
+            new=AsyncMock(),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision._load_prompt",
+            return_value="prompt",
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision._put_image_minio",
+        ) as mock_put,
+        patch("asyncio.to_thread", new=AsyncMock(side_effect=lambda fn, *args: fn(*args))),
+    ):
+        section = _make_image_section(3)
+        state = _make_state(extracted_sections=[section])
+        config = {"configurable": {"db": session, "llm": llm, "minio": minio}}
+        result = await node_extract_vision(state, config)
+
+    assert result["vision_chunks_count"] == 1
+    # image_minio_key must be set on the vision chunk
+    vision_chunk = result["chunks"][-1]
+    assert vision_chunk.image_minio_key is not None
+    assert f"processed/{DOCUMENT_ID}/images/3.png" in vision_chunk.image_minio_key
+    # _put_image_minio must have been called with the decoded bytes
+    mock_put.assert_called_once()
+    call_args = mock_put.call_args[0]
+    image_bytes = call_args[3]
+    assert base64.b64decode(_FAKE_B64) == image_bytes
+
+
+@pytest.mark.asyncio
+async def test_vision_chunk_image_minio_key_none_when_no_minio() -> None:
+    """When minio is absent from config, image_minio_key stays None (non-fatal)."""
+    session = _make_session()
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response("Brain scan."))
+    collection = _make_collection(vision_extraction_enabled=True)
+    model = _make_model()
+
+    with (
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision.get_collection",
+            new=AsyncMock(return_value=collection),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision.get_model",
+            new=AsyncMock(return_value=model),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision.update_step",
+            new=AsyncMock(),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision._load_prompt",
+            return_value="prompt",
+        ),
+    ):
+        # No "minio" key in config — simulates test/dev environment without MinIO
+        state = _make_state(extracted_sections=[_make_image_section(0)])
+        result = await node_extract_vision(state, _make_config(session, llm))
+
+    assert result["vision_chunks_count"] == 1
+    assert result["chunks"][-1].image_minio_key is None
+
+
+@pytest.mark.asyncio
+async def test_max_vision_images_cap_applied() -> None:
+    """When more visual sections than max_vision_images exist, only the first N are processed."""
+    session = _make_session()
+    # LLM succeeds for all calls
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response("X-ray finding."))
+
+    # cap of 2, but 4 image sections provided
+    collection = _make_collection(vision_extraction_enabled=True)
+    collection.chunk_config["max_vision_images"] = 2
+    model = _make_model()
+
+    many_sections = [_make_image_section(i) for i in range(4)]
+
+    with (
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision.get_collection",
+            new=AsyncMock(return_value=collection),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision.get_model",
+            new=AsyncMock(return_value=model),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision.update_step",
+            new=AsyncMock(),
+        ),
+        patch(
+            "src.graphs.ingest_graph.nodes.node_extract_vision._load_prompt",
+            return_value="prompt",
+        ),
+    ):
+        state = _make_state(
+            chunks=[_make_chunk(0)],
+            extracted_sections=many_sections,
+        )
+        result = await node_extract_vision(state, _make_config(session, llm))
+
+    # Only 2 vision chunks despite 4 image sections
+    assert result["vision_chunks_count"] == 2
+    assert llm.chat_completion.call_count == 2

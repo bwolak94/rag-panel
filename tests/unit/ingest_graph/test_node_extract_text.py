@@ -168,3 +168,110 @@ async def test_minio_put_called_when_minio_present() -> None:
     assert result["extracted_text"] == "Hello"
     # run_in_executor called twice: once for extraction, once for minio put
     assert loop_mock.run_in_executor.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# ADR-025: image section extraction from Docling pictures
+# ---------------------------------------------------------------------------
+
+
+def test_picture_to_b64_returns_base64_string() -> None:
+    """_picture_to_b64 converts a PIL image to a non-empty base64 PNG string."""
+    import base64
+
+    from src.graphs.ingest_graph.nodes.node_extract import _picture_to_b64
+
+    pil_image = MagicMock()
+    # Simulate PIL save: write minimal PNG bytes to the BytesIO buffer
+    import io
+
+    def fake_save(buf: io.BytesIO, format: str) -> None:
+        buf.write(b"\x89PNG\r\n\x1a\n")  # PNG magic bytes (simplified)
+
+    pil_image.save = fake_save
+    pic_item = MagicMock()
+    pic_item.get_image = MagicMock(return_value=pil_image)
+    doc = MagicMock()
+
+    result = _picture_to_b64(pic_item, doc)
+
+    assert result is not None
+    decoded = base64.b64decode(result)
+    assert decoded.startswith(b"\x89PNG")
+
+
+def test_picture_to_b64_returns_none_when_get_image_raises() -> None:
+    """_picture_to_b64 returns None when get_image raises — never propagates."""
+    from src.graphs.ingest_graph.nodes.node_extract import _picture_to_b64
+
+    pic_item = MagicMock()
+    pic_item.get_image = MagicMock(side_effect=RuntimeError("image extraction failed"))
+    doc = MagicMock()
+
+    result = _picture_to_b64(pic_item, doc)
+    assert result is None
+
+
+def test_picture_to_b64_returns_none_when_get_image_returns_none() -> None:
+    """_picture_to_b64 returns None when get_image returns None (no image data)."""
+    from src.graphs.ingest_graph.nodes.node_extract import _picture_to_b64
+
+    pic_item = MagicMock()
+    pic_item.get_image = MagicMock(return_value=None)
+    doc = MagicMock()
+
+    result = _picture_to_b64(pic_item, doc)
+    assert result is None
+
+
+def test_extract_with_docling_creates_image_sections_from_pictures() -> None:
+    """_extract_with_docling produces image sections for Docling picture items."""
+    import base64
+    import io
+
+    from src.graphs.ingest_graph.nodes.node_extract import _extract_with_docling
+
+    # Build a fake PIL image
+    pil_image = MagicMock()
+
+    def fake_save(buf: io.BytesIO, format: str) -> None:
+        buf.write(b"\x89PNG\r\n\x1a\n")
+
+    pil_image.save = fake_save
+
+    # Build a fake Docling picture item
+    pic_item = MagicMock()
+    pic_item.get_image = MagicMock(return_value=pil_image)
+    pic_item.caption = "Figure 1 — Chest X-ray"
+    pic_item.page_no = 3
+
+    # Build a fake Docling document
+    fake_text_item = MagicMock()
+    fake_text_item.text = "Clinical findings."
+    fake_text_item.page_no = 1
+    fake_doc = MagicMock()
+    fake_doc.export_to_markdown.return_value = "Clinical findings."
+    fake_doc.texts = [fake_text_item]
+    fake_doc.pictures = [pic_item]
+
+    fake_result = MagicMock()
+    fake_result.document = fake_doc
+
+    fake_converter = MagicMock()
+    fake_converter.convert.return_value = fake_result
+
+    fake_docling_module = MagicMock(DocumentConverter=MagicMock(return_value=fake_converter))
+    with patch.dict("sys.modules", {"docling.document_converter": fake_docling_module}):
+        full_text, sections = _extract_with_docling(b"fake pdf", "application/pdf")
+
+    # Should have 1 text section + 1 image section
+    assert len(sections) == 2
+    text_secs = [s for s in sections if s.section_type == "text"]
+    image_secs = [s for s in sections if s.section_type == "image"]
+    assert len(text_secs) == 1
+    assert len(image_secs) == 1
+
+    img_sec = image_secs[0]
+    assert img_sec.page == 3
+    assert img_sec.image_b64 is not None
+    assert base64.b64decode(img_sec.image_b64).startswith(b"\x89PNG")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import Any
 
 import structlog
 from sqlalchemy import func, select
@@ -23,6 +24,35 @@ from src.retrieval.schemas import TenantContext
 from src.retrieval.service import RetrievalService
 
 logger = structlog.get_logger(__name__)
+
+
+def _remove_objects_with_prefix(minio_client: Any, bucket: str, prefix: str) -> int:
+    """Remove all MinIO objects whose key starts with prefix.
+
+    Designed to run in a thread (blocking minio-py API).  Returns the count of
+    objects that were successfully deleted.  Errors on individual objects are
+    swallowed so that a partial failure does not block the overall deletion.
+
+    Args:
+        minio_client: Synchronous minio-py client.
+        bucket: Bucket name.
+        prefix: Key prefix, e.g. "processed/{doc_id}/images/".
+
+    Returns:
+        Number of objects deleted.
+    """
+    deleted = 0
+    try:
+        objects = list(minio_client.list_objects(bucket, prefix=prefix, recursive=True))
+        for obj in objects:
+            try:
+                minio_client.remove_object(bucket, obj.object_name)
+                deleted += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return deleted
 
 
 def _model_name_to_slug(name: str) -> str:
@@ -197,7 +227,7 @@ class DeletionService:
                 document_id=str(document_id),
             )
 
-        # 5. Delete MinIO object (best-effort — swallow all errors)
+        # 5a. Delete the original uploaded file from MinIO (best-effort)
         if bucket is not None:
             try:
                 minio_client = get_minio_client()
@@ -213,6 +243,30 @@ class DeletionService:
                     document_id=str(document_id),
                     error=str(exc),
                 )
+
+        # 5b. Delete vision image files (ADR-025, GDPR Art. 17).
+        # node_extract_vision stores images under processed/{doc_id}/images/*.png
+        # using bucket "tenant-{tenant_id}" (UUID, not slug — consistent with
+        # node_extract and node_fetch which also use tenant_id for processed/).
+        try:
+            minio_client = get_minio_client()
+            images_prefix = f"processed/{document_id}/images/"
+            vision_bucket = f"tenant-{ctx.tenant_id}"
+            deleted_count = await asyncio.to_thread(
+                _remove_objects_with_prefix, minio_client, vision_bucket, images_prefix
+            )
+            if deleted_count > 0:
+                logger.info(
+                    "deletion_service.vision_images_deleted",
+                    document_id=str(document_id),
+                    count=deleted_count,
+                )
+        except Exception as exc:
+            logger.warning(
+                "deletion_service.vision_images_delete_failed_swallowed",
+                document_id=str(document_id),
+                error=str(exc),
+            )
 
         # 6. Write audit log
         await self._audit.log(

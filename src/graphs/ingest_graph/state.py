@@ -12,7 +12,7 @@ GDPR rules:
 from __future__ import annotations
 
 import enum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -34,9 +34,8 @@ class Section(BaseModel):
     page: int | None = None
     section_index: int
     # Vision extraction fields — only set for image/table sections extracted by Docling.
-    # section_type defaults to "text"; set to "image" or "table" for visual content.
     # image_b64 holds the base64-encoded PNG/JPEG for vision model input (GDPR: never log).
-    section_type: str = "text"  # "text" | "image" | "table" | "diagram"
+    section_type: Literal["text", "image", "table", "diagram"] = "text"
     image_b64: str | None = None  # GDPR: never log — contains document visual content
 
 
@@ -57,6 +56,12 @@ class ChunkData(BaseModel):
     section: str | None = None
     token_count: int
     point_id: UUID  # SHA-256-derived deterministic UUID
+    # ADR-025: vision-derived chunks carry source_type="vision" so retrieval can
+    # filter or boost by source.  image_minio_key records where the original image
+    # was stored for potential citation display.  Both default to "text" / None for
+    # regular text chunks so existing code paths are unchanged.
+    source_type: Literal["text", "vision"] = "text"
+    image_minio_key: str | None = None  # GDPR: path only, no content
 
 
 class IngestState(BaseModel):

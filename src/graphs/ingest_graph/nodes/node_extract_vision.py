@@ -34,8 +34,11 @@ Security / GDPR:
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import contextlib
 import hashlib
+import io
 import json
 import uuid
 from datetime import UTC, datetime
@@ -143,13 +146,22 @@ async def _describe_section(
 
     # Build an OpenAI-compatible multimodal user message.
     # The image is sent as a data URL so the payload is self-contained.
+    # Derive a safe content label from the validated section type — never interpolate
+    # raw section_type from the document directly (prompt injection guard).
+    _safe_labels: dict[str, str] = {
+        "image": "image",
+        "table": "table",
+        "diagram": "diagram",
+    }
+    safe_label = _safe_labels.get(section.section_type, "image")
+
     user_message: dict[str, Any] = {
         "role": "user",
         "content": [
             {
                 "type": "text",
                 "text": (
-                    f"Describe the following medical {section.section_type} "
+                    f"Describe the following medical {safe_label} "
                     "in the JSON format specified in the system prompt. "
                     "Do NOT include any patient identifiers in your response."
                 ),
@@ -165,15 +177,18 @@ async def _describe_section(
     }
 
     try:
-        response = await llm.chat_completion(
-            model=model_id,
-            messages=[
-                {"role": "system", "content": prompt_template},
-                user_message,
-            ],
-            base_url=endpoint_url,
-            response_format={"type": "json_object"},
-            temperature=0.0,
+        response = await asyncio.wait_for(
+            llm.chat_completion(
+                model=model_id,
+                messages=[
+                    {"role": "system", "content": prompt_template},
+                    user_message,
+                ],
+                base_url=endpoint_url,
+                response_format={"type": "json_object"},
+                temperature=0.0,
+            ),
+            timeout=60.0,  # ADR-025 §5: 60 s per image
         )
         raw_content: str = response.choices[0].message.content or "{}"
         parsed = _parse_vision_response(raw_content)
@@ -189,11 +204,23 @@ async def _describe_section(
         return None
 
 
+def _put_image_minio(minio: Any, bucket: str, key: str, image_bytes: bytes) -> None:
+    """Upload raw image bytes to MinIO (called from asyncio.to_thread)."""
+    minio.put_object(
+        bucket,
+        key,
+        io.BytesIO(image_bytes),
+        length=len(image_bytes),
+        content_type="image/png",
+    )
+
+
 def _build_vision_chunk(
     parsed: dict[str, Any],
     section: Section,
     document_id: uuid.UUID,
     chunk_index: int,
+    image_minio_key: str | None = None,
 ) -> ChunkData:
     """Assemble a ChunkData from a parsed vision response.
 
@@ -206,9 +233,11 @@ def _build_vision_chunk(
         document_id: Document UUID for deterministic point_id derivation.
         chunk_index: The absolute index this chunk will occupy in state.chunks
                      (used for point_id derivation and idempotency).
+        image_minio_key: MinIO path where the original image was stored, or None
+                         when MinIO storage was skipped/failed.
 
     Returns:
-        ChunkData with metadata flagged as vision_extraction source.
+        ChunkData with source_type="vision" and image_minio_key populated (ADR-025).
     """
     description: str = parsed["description"]
     content_type: str = parsed["content_type"]
@@ -229,6 +258,8 @@ def _build_vision_chunk(
         section=section.heading or f"Figure (section {section.section_index})",
         token_count=len(chunk_text.split()),  # approximate; embedding node uses real tokenizer
         point_id=point_id,
+        source_type="vision",
+        image_minio_key=image_minio_key,
     )
 
 
@@ -258,6 +289,7 @@ async def node_extract_vision(state: IngestState, config: dict[str, Any]) -> dic
     cfg = config.get("configurable", {})
     session: AsyncSession = cfg["db"]
     llm = cfg["llm"]
+    minio = cfg.get("minio")
     step_start = utcnow()
 
     # Resolve collection and gate on feature flag
@@ -280,11 +312,21 @@ async def node_extract_vision(state: IngestState, config: dict[str, Any]) -> dic
         )
         return {"chunks": state.chunks, "vision_chunks_count": 0}
 
-    # Find visual sections with image data
+    # Find visual sections with image data; apply per-document image cap (ADR-025 §5).
+    max_images: int = int(chunk_config.get("max_vision_images", 20))
     sections: list[Section] = state.extracted_sections or []
     visual_sections = [
         s for s in sections if s.section_type in _VISUAL_SECTION_TYPES and s.image_b64
-    ]
+    ][:max_images]
+
+    if len(visual_sections) < sum(
+        1 for s in sections if s.section_type in _VISUAL_SECTION_TYPES and s.image_b64
+    ):
+        logger.warning(
+            "node_extract_vision.image_cap_applied",
+            document_id=str(state.document_id),
+            cap=max_images,
+        )
 
     if not visual_sections:
         logger.info(
@@ -306,11 +348,14 @@ async def node_extract_vision(state: IngestState, config: dict[str, Any]) -> dic
         )
         return {"chunks": state.chunks, "vision_chunks_count": 0}
 
-    # Resolve vision model
+    # Resolve vision model.
+    # chunk_config is a raw dict from Postgres JSONB; vision_model_id may be a str or
+    # uuid.UUID depending on the serialization path.  Normalise to uuid.UUID via str().
     try:
-        vision_model_id_str: str | None = chunk_config.get("vision_model_id")
-        if vision_model_id_str:
-            model_record = await get_model(session, uuid.UUID(vision_model_id_str))
+        raw_model_id = chunk_config.get("vision_model_id")
+        if raw_model_id:
+            vision_model_id = uuid.UUID(str(raw_model_id))
+            model_record = await get_model(session, vision_model_id)
         else:
             # Fall back: use embedding_model_id as a best-effort (may not support vision)
             model_record = await get_model(session, collection.embedding_model_id)
@@ -336,6 +381,7 @@ async def node_extract_vision(state: IngestState, config: dict[str, Any]) -> dic
     base_chunk_index = len(existing_chunks)
     vision_chunks: list[ChunkData] = []
 
+    bucket = f"tenant-{state.tenant_id}"
     for section in visual_sections:
         parsed = await _describe_section(
             section=section,
@@ -349,12 +395,30 @@ async def node_extract_vision(state: IngestState, config: dict[str, Any]) -> dic
             # Failure already logged in _describe_section — skip and continue
             continue
 
+        # Store raw image to MinIO (ADR-025 §4): processed/{doc_id}/images/{idx}.png
+        # Non-fatal: if MinIO is absent or storage fails, image_minio_key is None.
+        image_minio_key: str | None = None
+        if minio is not None and section.image_b64:
+            image_key = f"processed/{state.document_id}/images/{section.section_index}.png"
+            try:
+                image_bytes = base64.b64decode(section.image_b64)
+                await asyncio.to_thread(_put_image_minio, minio, bucket, image_key, image_bytes)
+                image_minio_key = image_key
+            except Exception as exc:
+                logger.warning(
+                    "node_extract_vision.minio_store_failed",
+                    document_id=str(state.document_id),
+                    section_index=section.section_index,
+                    error_type=type(exc).__name__,
+                )
+
         chunk_index = base_chunk_index + len(vision_chunks)
         vision_chunk = _build_vision_chunk(
             parsed=parsed,
             section=section,
             document_id=state.document_id,
             chunk_index=chunk_index,
+            image_minio_key=image_minio_key,
         )
         vision_chunks.append(vision_chunk)
 

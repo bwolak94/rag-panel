@@ -57,6 +57,24 @@ class PromptConfig(BaseModel):
         le=50,
         description="Truncate reranked results to this count. None keeps all results.",
     )
+    # ADR-026: agentic multi-hop research mode (opt-in per pipeline).
+    research_mode: bool = Field(
+        default=False,
+        description=(
+            "ADR-026: Activate the agentic research graph for iterative multi-hop retrieval. "
+            "When True, all questions are answered by the research_graph instead of the "
+            "standard query graph. Significant latency and token cost increase — opt-in only."
+        ),
+    )
+    research_max_steps: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description=(
+            "ADR-026: Maximum retrieve-reason-decide cycles per research session. "
+            "The graph forces synthesize when this budget is exhausted. Default 5, max 10."
+        ),
+    )
 
 
 class GuardrailsConfig(BaseModel):
