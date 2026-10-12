@@ -155,13 +155,74 @@ async def test_delete_document_success() -> None:
         )
 
     mock_retrieval.delete_by_document.assert_called_once()
-    mock_thread.assert_called_once()
+    # to_thread called twice: once for original file removal, once for vision images prefix
+    assert mock_thread.call_count == 2
     session.delete.assert_called_once_with(doc)
     session.flush.assert_called()
     mock_audit.log.assert_called_once()
     audit_call = mock_audit.log.call_args
     assert audit_call.kwargs["action"] == "document.hard_deleted"
     assert audit_call.kwargs["resource_id"] == DOCUMENT_ID
+
+
+@pytest.mark.asyncio
+async def test_delete_document_vision_images_prefix_deleted() -> None:
+    """ADR-025 GDPR: vision images at processed/{doc_id}/images/ are deleted (Art. 17)."""
+    from src.domain.deletion_service import DeletionService
+
+    doc = _make_doc()
+    collection = _make_collection()
+    model = _make_model()
+    tenant = _make_tenant()
+
+    session = MagicMock()
+    session.delete = AsyncMock()
+    session.flush = AsyncMock()
+
+    call_count: list[int] = [0]
+
+    async def _execute(q: object) -> MagicMock:
+        result = MagicMock()
+        idx = call_count[0]
+        call_count[0] += 1
+        seq = [doc, collection, model]
+        result.scalar_one_or_none = MagicMock(return_value=seq[idx] if idx < len(seq) else None)
+        return result
+
+    session.execute = _execute
+
+    mock_retrieval = AsyncMock()
+    mock_retrieval.delete_by_document = AsyncMock(return_value=5)
+    mock_tenant_repo = AsyncMock()
+    mock_tenant_repo.get_by_id = AsyncMock(return_value=tenant)
+    mock_audit = AsyncMock()
+    mock_audit.log = AsyncMock()
+
+    captured_calls: list[tuple] = []
+
+    async def _to_thread(fn: object, *args: object) -> None:
+        captured_calls.append((fn, args))
+
+    with (
+        patch("src.domain.deletion_service.TenantRepository", return_value=mock_tenant_repo),
+        patch("src.domain.deletion_service.AuditService", return_value=mock_audit),
+        patch("src.domain.deletion_service.get_minio_client") as mock_minio_factory,
+        patch("src.domain.deletion_service.asyncio.to_thread", side_effect=_to_thread),
+    ):
+        mock_minio_factory.return_value = MagicMock()
+        svc = DeletionService(session)
+        ctx = _make_ctx()
+        await svc.delete_document(document_id=DOCUMENT_ID, ctx=ctx, retrieval_svc=mock_retrieval)
+
+    # Second to_thread call must target the vision images prefix helper
+    from src.domain.deletion_service import _remove_objects_with_prefix
+
+    assert len(captured_calls) == 2
+    vision_fn, vision_args = captured_calls[1]
+    assert vision_fn is _remove_objects_with_prefix
+    # Bucket uses tenant UUID (not slug) — matches where node_extract_vision stores images
+    assert vision_args[1] == f"tenant-{TENANT_ID}"
+    assert vision_args[2] == f"processed/{DOCUMENT_ID}/images/"
 
 
 @pytest.mark.asyncio

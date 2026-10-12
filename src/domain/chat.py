@@ -111,8 +111,13 @@ class ChatService:
 
         # ── Response cache check (opt-in: pipeline.prompt_config.cache_responses) ──
         prompt_cfg = pipeline.prompt_config or {}
+        research_mode_early: bool = bool(prompt_cfg.get("research_mode", False))
         cache_responses: bool = bool(prompt_cfg.get("cache_responses", False))
-        if cache_responses:
+        # Cache is never consulted for research-mode pipelines: the iterative
+        # research graph produces richer answers than a single-pass cache entry.
+        # Reading a stale single-pass entry for a research-mode pipeline would also
+        # silently bypass the research graph, making research_mode=True unreliable.
+        if cache_responses and not research_mode_early:
             from src.core.cache import get_rag_cache
 
             _cache = get_rag_cache()
@@ -156,7 +161,7 @@ class ChatService:
         retrieval = await self._build_retrieval_service()
 
         # Dispatch to research graph when pipeline.prompt_config["research_mode"] is True
-        research_mode: bool = bool((pipeline.prompt_config or {}).get("research_mode", False))
+        research_mode: bool = research_mode_early
 
         if research_mode:
             (

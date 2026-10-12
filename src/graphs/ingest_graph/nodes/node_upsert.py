@@ -120,6 +120,8 @@ async def node_upsert(state: IngestState, config: dict[str, Any]) -> dict[str, A
                         "page": chunk.page,
                         "section": chunk.section,
                         "text": chunk.text,
+                        "source_type": chunk.source_type,
+                        "image_minio_key": chunk.image_minio_key,
                         "created_at": now_ts,
                     },
                 )

@@ -2255,8 +2255,9 @@ Medical procedures, drug formularies, and clinical guidelines are updated period
 
 ### ADR-025: Multi-Modal Ingestion -- Vision Model for Images and Tables in PDFs
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-30
+**Implemented:** 2026-10-11
 
 **Context:**
 Medical PDFs frequently contain images (anatomical diagrams, X-ray references), charts, and complex tables that Docling extracts as raw text poorly or not at all. A vision-capable model (e.g., LLaVA, Qwen-VL, or a multimodal variant available through vLLM) can generate text descriptions of these visual elements, making them searchable alongside native text chunks.
@@ -2298,8 +2299,9 @@ Medical PDFs frequently contain images (anatomical diagrams, X-ray references), 
 
 ### ADR-026: Agentic Multi-Hop Research Mode
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-30
+**Implemented:** 2026-10-12
 
 **Context:**
 Complex medical questions sometimes require iterative reasoning: "What are the contraindications of Drug A for patients with Condition B who are also taking Drug C?" A single retrieve-then-generate pass may not surface all relevant information because the initial query does not capture all sub-questions. An agentic loop that retrieves, reasons about what is missing, and retrieves again can answer such questions more completely.
@@ -2336,9 +2338,11 @@ Complex medical questions sometimes require iterative reasoning: "What are the c
 - **Always-on research mode:** Rejected. The extra LLM calls add 5-30s of latency and 3-10x token cost. Must be opt-in per pipeline.
 
 **Consequences:**
-- New directory: `src/graphs/research_graph/` with `state.py`, `graph.py`, `nodes/` (node_decompose, node_reason, node_decide, node_synthesize).
-- Modified: `src/graphs/query_graph/graph.py` (routing to research_graph), `src/graphs/query_graph/nodes/node_classify_intent.py` (multi_hop intent).
-- New prompts: `decompose_question_v1.md`, `reason_v1.md`, `decide_v1.md`, `synthesize_v1.md` in `src/graphs/prompts/`.
+- New directory: `src/graphs/research_graph/` with `state.py`, `graph.py`, `routing.py`, `nodes/` (node_research_plan, node_research_retrieve, node_research_synthesize). Graph topology: `node_research_plan →[route_after_plan]→ node_research_synthesize → END` with `node_research_plan ← node_research_retrieve` loop.
+- Modified: `src/domain/chat.py` (research_mode dispatch), `src/graphs/query_graph/nodes/node_classify_intent.py` (multi_hop intent added in v2 prompt), `src/domain/schemas/pipeline.py` (research_mode, research_max_steps fields in PromptConfig).
+- New prompts: `research_plan_v1.md`, `research_synthesize_v1.md`, `classify_intent_v2.md` in `src/graphs/prompts/`.
+- research_mode is pipeline-level (all questions for that pipeline go to research_graph). Per-question dispatch via multi_hop intent is available for future optimisation.
+- Single-collection constraint: research_graph requires exactly one collection_id per pipeline (multi-collection fan-out deferred).
 - Significant latency and cost increase when active. Must be clearly documented in pipeline configuration guidance.
 
 **Agents:** `rag-engineer` (graph design, prompts, nodes), `backend-dev` (pipeline schema, routing), `ml-engineer` (prompt tuning for decompose/reason), `security-auditor` (verify tenant isolation across iterative retrievals).

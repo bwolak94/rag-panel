@@ -328,16 +328,23 @@ async def run_ingest_graph(
     )
 
 
-def build_resume_graph(checkpointer: Any = None) -> Any:
+def build_resume_graph(
+    checkpointer: Any = None,
+    vision_extraction_enabled: bool = False,
+    graph_rag_enabled: bool = False,
+) -> Any:
     """Build a shortened ingest graph starting at node_chunk (for approved documents).
 
     Used when an admin approves a 'needs_review' document. The full extraction
-    and validation steps are skipped — only chunking, embedding, upsert, and
-    persist are executed. The caller must populate IngestState with
-    extracted_text and extracted_sections before invoking.
+    and validation steps are skipped — only chunking (+ optional enrichment),
+    embedding, upsert, and persist are executed. The caller must populate
+    IngestState with extracted_text and extracted_sections before invoking.
 
     Args:
         checkpointer: Optional AsyncPostgresSaver.
+        vision_extraction_enabled: Mirror of the same flag in build_ingest_graph —
+            ensures vision chunks are produced on re-ingest after admin approval.
+        graph_rag_enabled: Mirror of the same flag in build_ingest_graph.
 
     Returns:
         Compiled LangGraph CompiledStateGraph starting at node_chunk.
@@ -350,7 +357,31 @@ def build_resume_graph(checkpointer: Any = None) -> Any:
     builder.add_node("node_upsert", nodes.node_upsert)  # type: ignore[call-overload]
     builder.add_node("node_persist", nodes.node_persist)  # type: ignore[call-overload]
     builder.set_entry_point("node_chunk")
-    builder.add_edge("node_chunk", "node_embed")
+
+    # Mirror the enrichment wiring from build_ingest_graph so that re-ingested
+    # documents (after admin approval) also receive vision / Graph-RAG processing.
+    if vision_extraction_enabled:
+        builder.add_node(  # type: ignore[call-overload]
+            "node_extract_vision", nodes.node_extract_vision
+        )
+        builder.add_edge("node_chunk", "node_extract_vision")
+        if graph_rag_enabled:
+            builder.add_node(  # type: ignore[call-overload]
+                "node_extract_entities", nodes.node_extract_entities
+            )
+            builder.add_edge("node_extract_vision", "node_extract_entities")
+            builder.add_edge("node_extract_entities", "node_embed")
+        else:
+            builder.add_edge("node_extract_vision", "node_embed")
+    elif graph_rag_enabled:
+        builder.add_node(  # type: ignore[call-overload]
+            "node_extract_entities", nodes.node_extract_entities
+        )
+        builder.add_edge("node_chunk", "node_extract_entities")
+        builder.add_edge("node_extract_entities", "node_embed")
+    else:
+        builder.add_edge("node_chunk", "node_embed")
+
     builder.add_edge("node_embed", "node_upsert")
     builder.add_edge("node_upsert", "node_persist")
     builder.add_edge("node_persist", END)
@@ -518,7 +549,16 @@ async def resume_ingest_graph(
         }
     )
 
-    graph = build_resume_graph()
+    (
+        graph_rag_enabled,
+        vision_extraction_enabled,
+        _semantic_dedup,
+        _ocr,
+    ) = await _resolve_pipeline_flags(session, doc_row.collection_id)
+    graph = build_resume_graph(
+        vision_extraction_enabled=vision_extraction_enabled,
+        graph_rag_enabled=graph_rag_enabled,
+    )
     await graph.ainvoke(initial_state.model_dump(), config=config)
 
     logger.info(

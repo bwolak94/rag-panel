@@ -66,6 +66,15 @@ class ChunkConfig(BaseModel):
     # is added to the query graph in parallel when prompt_config also has
     # graph_rag_enabled=True.  Defaults to False — no overhead for standard pipelines.
     graph_rag_enabled: bool = False
+    # ADR-025: opt-in multi-modal vision extraction.
+    # When True, node_extract_vision runs after node_chunk and calls a vision-capable
+    # LLM to describe images, tables, and diagrams found in the document.
+    # vision_model_id: UUID of a models_registry record with a vision-capable model.
+    #   When None, falls back to the collection's embedding model (may fail silently).
+    # max_vision_images: hard cap per document to bound processing time (default 20).
+    vision_extraction_enabled: bool = False
+    vision_model_id: uuid.UUID | None = None
+    max_vision_images: int = Field(default=20, ge=1, le=100)
 
     @model_validator(mode="after")
     def overlap_less_than_chunk_size(self) -> ChunkConfig:

@@ -1,6 +1,7 @@
 """node_classify_intent — classify user query intent before retrieval.
 
-Calls the LLM to classify intent into: topical | chitchat | out_of_scope.
+Calls the LLM to classify intent into: topical | multi_hop | chitchat | out_of_scope.
+multi_hop is added in ADR-026: complex cross-document questions requiring iterative retrieval.
 Prompt injections from user input are mitigated via explicit delimiters in the prompt.
 
 GDPR: Never log question content — only intent and node name.
@@ -21,11 +22,12 @@ from src.graphs.query_graph.state import QueryState
 
 logger = structlog.get_logger(__name__)
 
-_PROMPT_PATH = Path(__file__).parent.parent.parent / "prompts" / "classify_intent_v1.md"
-_VALID_INTENTS = frozenset({"topical", "chitchat", "out_of_scope"})
+_PROMPT_PATH = Path(__file__).parent.parent.parent / "prompts" / "classify_intent_v2.md"
+_VALID_INTENTS = frozenset({"topical", "multi_hop", "chitchat", "out_of_scope"})
 _DEFAULT_INTENT = "topical"  # Conservative: attempt retrieval rather than suppress a valid query
 
-# Module-level cache: read once to avoid repeated I/O
+# Module-level cache: read once per process start to avoid repeated I/O.
+# Reset to None whenever _PROMPT_PATH is updated (e.g. prompt version bump).
 _prompt_cache: str | None = None
 
 
@@ -97,7 +99,7 @@ async def node_classify_intent(state: QueryState, config: dict[str, Any]) -> dic
     except Exception as exc:
         raise QueryNodeError(f"classify_intent_llm_error: {type(exc).__name__}") from exc
 
-    halt = intent != "topical"
+    halt = intent not in {"topical", "multi_hop"}
     _lf_update_span(
         metadata={
             "tenant_id": str(state.tenant_id),

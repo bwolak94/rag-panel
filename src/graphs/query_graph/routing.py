@@ -13,10 +13,16 @@ def route_after_classify(state: QueryState) -> str:
     """Route after classify_intent node.
 
     Returns:
-        "node_rewrite_query" if intent is topical.
+        "node_rewrite_query" if intent is topical or multi_hop.
         "node_guardrails_output" for chitchat or out_of_scope (halt=True set by classify node).
+
+    Note: multi_hop questions route to node_rewrite_query just like topical ones.
+    This function is NOT aware of research_mode. When research_mode=True, ChatService
+    bypasses the query graph entirely (invoking research_graph directly) so this
+    routing function is never called for research-mode pipelines (ADR-026).
+    When research_mode=False, multi_hop falls back to the standard retrieval path.
     """
-    if state.intent == "topical":
+    if state.intent in {"topical", "multi_hop"}:
         return "node_rewrite_query"
     return "node_guardrails_output"
 

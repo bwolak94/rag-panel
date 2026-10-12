@@ -56,7 +56,7 @@ def _format_previous_iterations(iterations: list[ResearchIteration]) -> str:
     context for the next planning step.
     """
     if not iterations:
-        return "(nenhuma iteração anterior)"
+        return "(brak poprzednich iteracji)"
     parts: list[str] = []
     for it in iterations:
         parts.append(

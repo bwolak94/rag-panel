@@ -21,7 +21,7 @@ from langfuse import observe
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.clients.llm_client import LLMClient
-from src.core.exceptions import TenantIsolationError
+from src.core.exceptions import QueryNodeError, TenantIsolationError
 from src.core.langfuse_client import update_span_metadata as _lf_update_span
 from src.db.models.rag_pipeline import RagPipeline
 from src.domain.auth import UserContext
@@ -136,10 +136,26 @@ async def invoke_research_graph(
     """
     _assert_pipeline_collections_authorized(pipeline, ctx)
 
+    # ADR-026 constraint: node_research_retrieve uses collection_ids[0] to resolve the
+    # embedding model and Qdrant collection name. Multi-collection pipelines with different
+    # embedding models would silently search only the first collection's Qdrant index.
+    # Until fan-out across heterogeneous embedding models is implemented, enforce exactly
+    # one collection per research-mode pipeline to prevent silent data loss.
+    if len(pipeline.collection_ids) != 1:
+        raise QueryNodeError(
+            "research_graph requires exactly one collection_id per pipeline; "
+            f"got {len(pipeline.collection_ids)}. "
+            "Configure a dedicated pipeline with a single collection for research mode."
+        )
+
     graph = build_research_graph()
 
     prompt_config: dict[str, Any] = pipeline.prompt_config or {}
-    max_steps: int = int(prompt_config.get("research_max_steps", 3))
+    try:
+        _raw_max_steps = int(prompt_config.get("research_max_steps", 5))
+    except (TypeError, ValueError):
+        _raw_max_steps = 5
+    max_steps: int = max(1, min(_raw_max_steps, 10))  # ADR-026: clamp to [1, 10]
 
     _lf_update_span(
         {

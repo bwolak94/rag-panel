@@ -15,6 +15,7 @@ mime_type, and latency. No extracted text or document content appears in spans.
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 from datetime import UTC, datetime
@@ -61,8 +62,32 @@ _OCR_ELIGIBLE_MIMES = frozenset(
 _OCR_CHARS_PER_PAGE_THRESHOLD = 50
 
 
+def _picture_to_b64(picture_item: Any, doc: Any) -> str | None:
+    """Convert a Docling PictureItem to a base64-encoded PNG string.
+
+    Returns None when the image cannot be exported (no image data, conversion error,
+    or PIL not available).  Never raises — image extraction is best-effort.
+    """
+    try:
+        pil_image = picture_item.get_image(doc)
+        if pil_image is None:
+            return None
+        buf = io.BytesIO()
+        pil_image.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return None
+
+
 def _extract_with_docling(raw: bytes, mime: str) -> tuple[str, list[Section]]:
-    """Run Docling synchronously (called from executor)."""
+    """Run Docling synchronously (called from executor).
+
+    Extracts both text sections and visual sections (images, tables, diagrams).
+    Visual sections carry ``section_type`` set to ``"image"`` or ``"table"`` and
+    populate ``image_b64`` with a base64-encoded PNG for downstream vision extraction
+    (ADR-025).  Sections without extractable image data are silently omitted from
+    the visual sections; they do not block the text extraction path.
+    """
     try:
         from docling.document_converter import DocumentConverter  # type: ignore[import-not-found]
     except ImportError:
@@ -75,6 +100,8 @@ def _extract_with_docling(raw: bytes, mime: str) -> tuple[str, list[Section]]:
         doc = result.document
         full_text: str = doc.export_to_markdown()
         sections: list[Section] = []
+
+        # Text sections — iterate doc.texts (paragraphs, headings, etc.)
         for idx, item in enumerate(doc.texts):
             text = getattr(item, "text", "") or ""
             if text.strip():
@@ -86,6 +113,28 @@ def _extract_with_docling(raw: bytes, mime: str) -> tuple[str, list[Section]]:
                         section_index=idx,
                     )
                 )
+
+        # Visual sections — ADR-025: iterate doc.pictures to extract image data.
+        # Each extracted picture becomes a Section with section_type="image" and
+        # image_b64 populated for node_extract_vision to process.
+        # Errors for individual pictures are swallowed — vision extraction is optional.
+        text_count = len(sections)
+        pictures = getattr(doc, "pictures", []) or []
+        for pic_offset, pic_item in enumerate(pictures):
+            image_b64 = _picture_to_b64(pic_item, doc)
+            if image_b64 is None:
+                continue
+            sections.append(
+                Section(
+                    heading=getattr(pic_item, "caption", None),
+                    text="",  # description provided later by node_extract_vision
+                    page=getattr(pic_item, "page_no", None),
+                    section_index=text_count + pic_offset,
+                    section_type="image",
+                    image_b64=image_b64,
+                )
+            )
+
         return full_text, sections
     except Exception:
         return _extract_plain(raw)

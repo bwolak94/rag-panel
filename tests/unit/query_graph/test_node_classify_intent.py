@@ -2,6 +2,7 @@
 
 Tests cover:
 - topical question → intent="topical", halt=False
+- multi_hop question → intent="multi_hop", halt=False (ADR-026)
 - chitchat → intent="chitchat", halt=True
 - out_of_scope → intent="out_of_scope", halt=True
 - LLM returns invalid JSON → defaults to "topical"
@@ -78,6 +79,23 @@ async def test_topical_question_returns_topical() -> None:
     result = await node_classify_intent(state, _make_config(llm, db))
 
     assert result["intent"] == "topical"
+    assert result["halt"] is False
+
+
+@pytest.mark.asyncio
+async def test_multi_hop_question_returns_halt_false() -> None:
+    """A multi-hop question is classified as multi_hop, halt=False (ADR-026)."""
+    model_record = _make_model_record()
+    db = _make_db(model_record)
+    llm = AsyncMock()
+    llm.chat_completion = AsyncMock(return_value=_make_llm_response("multi_hop"))
+
+    state = _make_state(
+        "Jakie leki wchodzą w interakcje z lekami stosowanymi u pacjentów z CKD i cukrzycą?"
+    )
+    result = await node_classify_intent(state, _make_config(llm, db))
+
+    assert result["intent"] == "multi_hop"
     assert result["halt"] is False
 
 

@@ -226,3 +226,66 @@ async def test_upsert_falls_back_to_none_sparse_when_encode_fails() -> None:
     assert len(captured_points) == n
     for point in captured_points:
         assert point.sparse_vector is None, "sparse_vector must be None when encoding fails"
+
+
+# ---------------------------------------------------------------------------
+# ADR-025: source_type and image_minio_key in Qdrant payload
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_payload_source_type_defaults_to_text() -> None:
+    """Regular text chunks carry source_type='text' in the Qdrant payload."""
+    chunks = _make_chunks(2)
+    embeddings = _make_embeddings(2)
+
+    session = _make_session()
+    retrieval = MagicMock(spec=RetrievalService)
+    captured_points: list[QdrantPoint] = []
+
+    async def capture_upsert(ctx: object, collection: str, points: list[QdrantPoint]) -> None:
+        captured_points.extend(points)
+
+    retrieval.upsert_batch = capture_upsert
+    state = _make_state(chunks=chunks, embeddings=embeddings)
+
+    with patch("src.graphs.ingest_graph.nodes.node_upsert.update_step", new=AsyncMock()):
+        await node_upsert(state, _make_config(session, retrieval))
+
+    for point in captured_points:
+        assert point.payload["source_type"] == "text"
+        assert point.payload["image_minio_key"] is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_payload_source_type_vision_for_vision_chunks() -> None:
+    """Vision chunks carry source_type='vision' and image_minio_key in the Qdrant payload."""
+    from src.graphs.ingest_graph.state import ChunkData
+
+    vision_chunk = ChunkData(
+        chunk_index=0,
+        text="[IMAGE] Chest X-ray showing bilateral infiltrates.",
+        page=2,
+        section="Figure 1",
+        token_count=8,
+        point_id=_make_point_id(DOCUMENT_ID, 0),
+        source_type="vision",
+        image_minio_key=f"processed/{DOCUMENT_ID}/images/0.png",
+    )
+
+    session = _make_session()
+    retrieval = MagicMock(spec=RetrievalService)
+    captured_points: list[QdrantPoint] = []
+
+    async def capture_upsert(ctx: object, collection: str, points: list[QdrantPoint]) -> None:
+        captured_points.extend(points)
+
+    retrieval.upsert_batch = capture_upsert
+    state = _make_state(chunks=[vision_chunk], embeddings=_make_embeddings(1))
+
+    with patch("src.graphs.ingest_graph.nodes.node_upsert.update_step", new=AsyncMock()):
+        await node_upsert(state, _make_config(session, retrieval))
+
+    assert len(captured_points) == 1
+    assert captured_points[0].payload["source_type"] == "vision"
+    assert captured_points[0].payload["image_minio_key"] == f"processed/{DOCUMENT_ID}/images/0.png"

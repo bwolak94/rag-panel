@@ -176,3 +176,38 @@ class TestPromptConfigMaxContextTokens:
         original = PromptConfig(max_context_tokens=4096)
         restored = PromptConfig.model_validate(original.model_dump())
         assert restored.max_context_tokens == 4096
+
+
+class TestPromptConfigResearchMode:
+    """Tests for ADR-026 research_mode and research_max_steps fields."""
+
+    def test_defaults(self) -> None:
+        """research_mode defaults False, research_max_steps defaults 5."""
+        cfg = PromptConfig()
+        assert cfg.research_mode is False
+        assert cfg.research_max_steps == 5
+
+    def test_research_mode_true_accepted(self) -> None:
+        """research_mode=True is valid."""
+        cfg = PromptConfig(research_mode=True)
+        assert cfg.research_mode is True
+
+    def test_research_max_steps_min_boundary_accepted(self) -> None:
+        """research_max_steps=1 is the minimum valid value."""
+        cfg = PromptConfig(research_max_steps=1)
+        assert cfg.research_max_steps == 1
+
+    def test_research_max_steps_max_boundary_accepted(self) -> None:
+        """research_max_steps=10 is the maximum valid value."""
+        cfg = PromptConfig(research_max_steps=10)
+        assert cfg.research_max_steps == 10
+
+    def test_research_max_steps_below_min_raises(self) -> None:
+        """research_max_steps=0 must raise ValidationError."""
+        with pytest.raises(ValidationError):
+            PromptConfig(research_max_steps=0)
+
+    def test_research_max_steps_above_max_raises(self) -> None:
+        """research_max_steps=11 must raise ValidationError."""
+        with pytest.raises(ValidationError):
+            PromptConfig(research_max_steps=11)
