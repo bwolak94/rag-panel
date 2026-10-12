@@ -126,9 +126,7 @@ async def test_single_collection_passes_constraint_and_runs_graph() -> None:
         }
     )
 
-    with patch(
-        "src.graphs.research_graph.graph.build_research_graph", return_value=mock_graph
-    ):
+    with patch("src.graphs.research_graph.graph.build_research_graph", return_value=mock_graph):
         answer, citations, prompt_tokens, completion_tokens = await invoke_research_graph(
             question="complex medical question",
             pipeline=pipeline,
